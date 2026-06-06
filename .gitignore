@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+venv/
+env/
+.Python
+
+# Node
+node_modules/
+.next/
+out/
+.npm
+.pnp
+.pnp.*
+.yarn/*
+
+# Environment / Secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ruff
+.ruff_cache/
+
+# Logs
+*.log
+uvicorn_err.log
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Coverage
+coverage/
+
+# Vercel
+.vercel
