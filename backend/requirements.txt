@@ -16,3 +16,4 @@ structlog==24.4.0
 python-multipart==0.0.20
 bcrypt==4.0.1
 email-validator>=2.1.0
+aiosmtplib==3.0.2

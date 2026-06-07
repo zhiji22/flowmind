@@ -31,10 +31,14 @@ async def _search_duckduckgo(query: str) -> str:
     """DuckDuckGo 搜索（免费后备，带重试）。"""
     from duckduckgo_search import DDGS
 
+    loop = asyncio.get_event_loop()
+
     for attempt in range(MAX_RETRIES):
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=5))
+            results = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: list(DDGS().text(query, max_results=5))),
+                timeout=30,
+            )
 
             if not results:
                 return f"搜索 '{query}' 没有找到结果。"
@@ -43,6 +47,8 @@ async def _search_duckduckgo(query: str) -> str:
             for r in results:
                 formatted.append(f"- {r['title']}\n  {r['body']}\n  链接: {r['href']}")
             return "\n\n".join(formatted)
+        except asyncio.TimeoutError:
+            return f"搜索 '{query}' 超时，请稍后重试。"
         except Exception as e:
             if "Ratelimit" in str(e) and attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAYS[attempt])

@@ -28,4 +28,13 @@ class Settings(BaseSettings):
     
     model_config = {"env_file": ".env", "extra": "ignore"}
 
+
+    # SMTP 邮件
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_USE_TLS: bool = True
+
 settings = Settings()

@@ -7,6 +7,9 @@ from app.database import engine, Base
 from app.models import User, Workflow, Step, Schedule, Execution, StepExecution, ApprovalRequest
 from app.routers import auth as auth_router
 from app.routers import chat as chat_router
+from app.routers import workflows as workflows_router
+from app.routers import executions as executions_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +36,8 @@ app.add_middleware(
 
 app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat_router.router, prefix="/api/chat", tags=["chat"])
+app.include_router(workflows_router.router, prefix="/api/workflows", tags=["workflows"])
+app.include_router(executions_router.router, prefix="/api/executions", tags=["executions"])
 
 
 @app.get("/api/health")

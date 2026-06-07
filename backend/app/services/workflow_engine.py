@@ -45,6 +45,7 @@ WORKFLOW_SYSTEM_PROMPT = """你是一个工作流设计专家。用户会用自�
 6. position 用于前端可视化布局，合理分配 x, y 坐标
 7. 步骤之间通过 id 和 next/next_yes/next_no 连接，形成有向无环图（DAG）
 8. 只返回 JSON，不要返回 markdown 代码块或其他文字
+9. 当工作流涉及发送邮件时，收件人地址使用用户的邮箱：{user_email}
 """
 
 
@@ -61,7 +62,7 @@ def _build_tools_description() -> str:
     return "\n".join(descriptions)
 
 
-async def generate_workflow_from_message(user_message: str) -> dict[str, Any]:
+async def generate_workflow_from_message(user_message: str, user_email: str = "") -> dict[str, Any]:
     """
     从自然语言生成工作流 DAG。
 
@@ -72,7 +73,10 @@ async def generate_workflow_from_message(user_message: str) -> dict[str, Any]:
       4. 返回结构化的工作流定义
     """
     tools_desc = _build_tools_description()
-    system_prompt = WORKFLOW_SYSTEM_PROMPT.format(tools_description=tools_desc)
+    system_prompt = WORKFLOW_SYSTEM_PROMPT.format(
+        tools_description=tools_desc,
+        user_email=user_email or "user@example.com",
+    )
 
     # 生成工作流
     response = chat_completion(
