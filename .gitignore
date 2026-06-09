@@ -25,7 +25,14 @@ out/
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
 !.env.example
+!**/.env.example
+
+# Docker secrets
+docker-compose.override.yml
 
 # IDE
 .vscode/

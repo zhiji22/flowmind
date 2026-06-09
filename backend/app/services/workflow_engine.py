@@ -7,8 +7,30 @@
 import json
 from typing import Any
 
+from app.models.workflow import StepType
 from app.services.llm_client import chat_completion
 from app.tools.base import registry
+
+# Keys that should never appear in a step config (prevent injection)
+_DANGEROUS_CONFIG_KEYS = frozenset({"__class__", "__dict__", "__module__", "eval", "exec", "compile", "__import__"})
+
+# Allowed step_type values
+_VALID_STEP_TYPES = frozenset(st.value for st in StepType)
+
+
+def _check_dangerous_keys(obj: Any, path: str) -> None:
+    """递归检查字典和列表中所有层级的危险 key。"""
+    if isinstance(obj, list):
+        for i, item in enumerate(obj):
+            _check_dangerous_keys(item, f"{path}[{i}]")
+        return
+    if not isinstance(obj, dict):
+        return
+    dangerous = _DANGEROUS_CONFIG_KEYS & obj.keys()
+    if dangerous:
+        raise ValueError(f"{path} 包含不允许的 key: {dangerous}")
+    for k, v in obj.items():
+        _check_dangerous_keys(v, f"{path}.{k}")
 
 
 # 指导 LLM 生成工作流 DAG 的 System Prompt
@@ -45,6 +67,7 @@ WORKFLOW_SYSTEM_PROMPT = """你是一个工作流设计专家。用户会用自�
 6. position 用于前端可视化布局，合理分配 x, y 坐标
 7. 步骤之间通过 id 和 next/next_yes/next_no 连接，形成有向无环图（DAG）
 8. 只返回 JSON，不要返回 markdown 代码块或其他文字
+9. 当工作流涉及发送邮件时，收件人地址使用用户的邮箱：{user_email}
 """
 
 
@@ -61,7 +84,7 @@ def _build_tools_description() -> str:
     return "\n".join(descriptions)
 
 
-async def generate_workflow_from_message(user_message: str) -> dict[str, Any]:
+async def generate_workflow_from_message(user_message: str, user_email: str = "") -> dict[str, Any]:
     """
     从自然语言生成工作流 DAG。
 
@@ -72,7 +95,10 @@ async def generate_workflow_from_message(user_message: str) -> dict[str, Any]:
       4. 返回结构化的工作流定义
     """
     tools_desc = _build_tools_description()
-    system_prompt = WORKFLOW_SYSTEM_PROMPT.format(tools_description=tools_desc)
+    system_prompt = WORKFLOW_SYSTEM_PROMPT.format(
+        tools_description=tools_desc,
+        user_email=user_email or "user@example.com",
+    )
 
     # 生成工作流
     response = chat_completion(
@@ -104,14 +130,24 @@ async def generate_workflow_from_message(user_message: str) -> dict[str, Any]:
 
     if steps[0].get("step_type") != "trigger":
         raise ValueError("工作流第一步必须是 trigger 类型")
-    
+
     # 验证所有tool类型的步骤使用的工具确实存在
     available_tools = set(registry.list_names())
     for step in steps:
-        if step.get("step_type") == "tool":
+        # 验证 step_type 是合法枚举值
+        step_type = step.get("step_type", "")
+        if step_type not in _VALID_STEP_TYPES:
+            raise ValueError(f"步骤包含非法的 step_type: {step_type}")
+
+        if step_type == "tool":
             tool_name = step.get("tool_name", "")
             if tool_name and tool_name not in available_tools:
                 raise ValueError(f"步骤引用了不存在的工具: {tool_name}")
+
+        # 清理 config 中的危险 key（递归检查）
+        config = step.get("config", {})
+        if isinstance(config, dict):
+            _check_dangerous_keys(config, "config")
             
     return workflow_data
 
