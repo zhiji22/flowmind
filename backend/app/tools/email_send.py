@@ -1,4 +1,5 @@
 import logging
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -9,6 +10,9 @@ from app.config import settings
 from app.tools.base import BaseTool, registry
 
 logger = logging.getLogger(__name__)
+
+# Basic RFC-compliant email regex
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 
 class EmailSendTool(BaseTool):
@@ -42,7 +46,10 @@ class EmailSendTool(BaseTool):
 
         if not to_addr:
             return "发送失败：缺少收件人邮箱地址"
-        
+
+        if not _EMAIL_RE.match(to_addr):
+            return "发送失败：收件人邮箱地址格式无效"
+
         msg = MIMEMultipart()
         msg["From"] = settings.SMTP_FROM
         msg["To"] = to_addr
@@ -56,13 +63,13 @@ class EmailSendTool(BaseTool):
                 port=settings.SMTP_PORT,
                 username=settings.SMTP_USER,
                 password=settings.SMTP_PASSWORD,
-                use_tls=settings.SMTP_PORT == 465,
-                start_tls=settings.SMTP_PORT == 587,
+                use_tls=settings.SMTP_USE_TLS and settings.SMTP_PORT == 465,
+                start_tls=settings.SMTP_USE_TLS and settings.SMTP_PORT == 587,
             )
             logger.info("邮件已发送至 %s，主题: %s", to_addr, subject)
             return f"邮件已成功发送至 {to_addr}"
         except Exception as e:
             logger.error("邮件发送失败: %s", e)
-            raise RuntimeError(f"邮件发送失败：{e}") from e
+            raise RuntimeError("邮件发送失败，请检查邮件服务配置") from e
 
 registry.register(EmailSendTool())

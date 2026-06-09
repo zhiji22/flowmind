@@ -3,8 +3,8 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     #数据库
-    DATABASE_URL: str = "postgresql+asyncpg://flowmind:flowmind_secret_123@postgres:5432/flowmind"
-    
+    DATABASE_URL: str  # 必须通过 .env 或环境变量设置
+
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     LLM_MODEL_STRONG: str = "qwen-max"
 
     # Auth
-    JWT_SECRET: str = "dev_jwt_secret_not_for_production"
+    JWT_SECRET: str  # 必须通过 .env 或环境变量设置
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 

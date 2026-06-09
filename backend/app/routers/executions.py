@@ -2,11 +2,11 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.execution import Execution, ExecutionStatus
+from app.models.execution import Execution, ExecutionStatus, StepExecution
 from app.models.user import User
 from app.models.workflow import Workflow
 from app.routers.auth import get_current_user
@@ -59,7 +59,11 @@ async def get_execution(
     db: AsyncSession = Depends(get_db),
 ):
     """查询执行详情，包含每个步骤的状态"""
-    result = await db.execute(select(Execution).where(Execution.id == execution_id))
+    result = await db.execute(
+        select(Execution)
+        .join(Workflow, Execution.workflow_id == Workflow.id)
+        .where(Execution.id == execution_id, Workflow.user_id == current_user.id)
+    )
     execution = result.scalar_one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="执行记录不存在")
@@ -77,7 +81,11 @@ async def retry_execution(
 
     找到失败的步骤，重置状态，重新执行。
     """
-    result = await db.execute(select(Execution).where(Execution.id == execution_id))
+    result = await db.execute(
+        select(Execution)
+        .join(Workflow, Execution.workflow_id == Workflow.id)
+        .where(Execution.id == execution_id, Workflow.user_id == current_user.id)
+    )
     execution = result.scalar_one_or_none()
     if not execution:
         raise HTTPException(status_code=404, detail="执行记录不存在")
@@ -89,10 +97,15 @@ async def retry_execution(
     execution.status = ExecutionStatus.PENDING
     execution.finished_at = None
     execution.result = None
+
+    # 清理旧的步骤执行记录，避免重复
+    await db.execute(
+        delete(StepExecution).where(StepExecution.execution_id == execution.id)
+    )
     await db.commit()
 
     # 重新执行
     await execute_workflow(execution.id, db)
 
-    result = await db.execute(select(Execution).where(Execution.id == execution_id))
-    return result.scalar_one()
+    await db.refresh(execution)
+    return execution
