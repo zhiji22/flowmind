@@ -20,7 +20,7 @@ from app.services.workflow_engine import generate_workflow_from_message
 router = APIRouter()
 
 
-@router.get("/", response_model=list[WorkflowListResponse])
+@router.get("", response_model=list[WorkflowListResponse])
 async def list_workflows(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -35,7 +35,7 @@ async def list_workflows(
     return result.scalars().all()
 
 
-@router.post("/", response_model=WorkflowResponse)
+@router.post("", response_model=WorkflowResponse)
 async def create_workflow(
     req: CreateWorkflowRequest,
     current_user: User = Depends(get_current_user),

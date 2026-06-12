@@ -101,12 +101,12 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
     )
 
     # 生成工作流
-    response = chat_completion(
+    response = await chat_completion(
         messages=[
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_message },
         ],
-        model = "qwen-max",
+        model="qwen-max",
     )
 
     content = response.choices[0].message.content or ""
