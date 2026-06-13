@@ -36,7 +36,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - backend/.env
     depends_on:
@@ -55,6 +55,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    environment:
+      - API_URL=http://api:8000
     depends_on:
       - api
     volumes:

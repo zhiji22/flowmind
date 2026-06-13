@@ -15,12 +15,13 @@ from app.schemas.workflow import (
     WorkflowResponse,
     WorkflowListResponse,
 )
+from app.services.llm_client import LLMError
 from app.services.workflow_engine import generate_workflow_from_message
 
 router = APIRouter()
 
 
-@router.get("/", response_model=list[WorkflowListResponse])
+@router.get("", response_model=list[WorkflowListResponse])
 async def list_workflows(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -35,7 +36,7 @@ async def list_workflows(
     return result.scalars().all()
 
 
-@router.post("/", response_model=WorkflowResponse)
+@router.post("", response_model=WorkflowResponse)
 async def create_workflow(
     req: CreateWorkflowRequest,
     current_user: User = Depends(get_current_user),
@@ -51,6 +52,8 @@ async def create_workflow(
         workflow_data = await generate_workflow_from_message(req.message, current_user.email)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except LLMError as e:
+        raise HTTPException(status_code=503, detail=f"LLM 服务暂时不可用: {e}")
 
     # 创建 Workflow 记录
     workflow = Workflow(
@@ -148,8 +151,4 @@ async def delete_workflow(
     await db.delete(workflow)
     await db.commit()
     return {"message": "已删除"}
-
-
-
-
 

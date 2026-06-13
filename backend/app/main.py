@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
+from app.services.llm_client import close_client
 from app.models import User, Workflow, Step, Schedule, Execution, StepExecution, ApprovalRequest
 from app.routers import auth as auth_router
 from app.routers import chat as chat_router
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     yield
     await engine.dispose()
+    await close_client()
 
 
 app = FastAPI(
@@ -24,6 +26,7 @@ app = FastAPI(
     description="AI智能工作流平台",
     version="0.1.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 app.add_middleware(

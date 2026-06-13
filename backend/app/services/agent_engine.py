@@ -1,5 +1,5 @@
 import json
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from app.config import settings
 from app.services.llm_client import chat_completion
@@ -45,7 +45,7 @@ async def run_agent(user_message: str) -> dict[str, Any]:
     while iterations < settings.AGENT_MAX_ITERATIONS:
         iterations += 1
 
-        response = chat_completion(messages, tools=tools if tools else None)
+        response = await chat_completion(messages, tools=tools if tools else None)
         choice  = response.choices[0]
 
         # 没有工具了 直接回答
