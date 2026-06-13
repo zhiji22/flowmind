@@ -12,10 +12,11 @@
   4. 更新 Execution 和 StepExecution 的状态
   5. 支持失败重试：失败的步骤可以重新执行
 """
+import logging
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,12 +25,50 @@ from app.models.execution import Execution, StepExecution, ExecutionStatus, Step
 from app.models.workflow import Step
 from app.tools.base import registry
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 常量定义
+# ---------------------------------------------------------------------------
+
+MSG_TRIGGER_SUCCESS = "工作流触发成功"
+MSG_WORKFLOW_COMPLETE = "工作流执行完成"
+MSG_WORKFLOW_CYCLE = "工作流包含循环依赖，无法执行"
+MSG_STEP_FAILED = "步骤执行失败"
+MSG_TOOL_NOT_FOUND = "工具不存在"
+
+
+# ---------------------------------------------------------------------------
+# TypedDict 类型定义
+# ---------------------------------------------------------------------------
+
+class StepConfigDict(TypedDict, total=False):
+    """步骤配置字典类型"""
+    next: list[str]
+    next_yes: list[str]
+    next_no: list[str]
+    field: str
+    operator: str
+    value: str
+
+
+class StepDict(TypedDict, total=False):
+    """步骤字典类型"""
+    id: str
+    step_type: str
+    tool_name: str | None
+    config: StepConfigDict
+    next: list[str]
+    next_yes: list[str]
+    next_no: list[str]
+
 
 # ---------------------------------------------------------------------------
 # 拓扑排序
 # ---------------------------------------------------------------------------
 
-def _topological_sort(steps: list[dict]) -> list[dict]:
+def _topological_sort(steps: list[StepDict]) -> list[StepDict]:
     """
     拓扑排序：根据步骤之间的依赖关系，确定一个合法的执行顺序。
     保证每一步在它依赖的步骤之后执行。
@@ -112,7 +151,7 @@ async def _execute_trigger_step(
     se.status = StepExecutionStatus.SUCCESS
     se.started_at = now
     se.finished_at = now
-    se.output_data = {"message": "工作流触发成功"}
+    se.output_data = {"message": MSG_TRIGGER_SUCCESS}
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +179,7 @@ async def _execute_tool_step(
 
     if not tool:
         se.status = StepExecutionStatus.FAILED
-        se.error_message = f"工具 '{tool_name}' 不存在"
+        se.error_message = f"{MSG_TOOL_NOT_FOUND}: '{tool_name}'"
         se.finished_at = datetime.now(timezone.utc)
         await db.commit()
         return False
@@ -191,7 +230,7 @@ async def _execute_condition_step(
     actual_value = ""
 
     if condition_field.startswith("$"):
-        parts = condition_field.lstrip("$").split(".")
+        parts = condition_field[1:].split(".")  # 只移除第一个 $ 符号
         ref_step_id = parts[0]
         if ref_step_id in outputs and len(parts) > 1:
             actual_value = str(outputs[ref_step_id].get(parts[1], ""))
@@ -266,7 +305,7 @@ async def _execute_approval_step(
     db.add(approval)
     await db.commit()
 
-    execution.status = ExecutionStatus.RUNNING
+    execution.status = ExecutionStatus.WAITING_FOR_APPROVAL
     execution.result = {"waiting_for_approval": str(approval.id)}
     await db.commit()
 
@@ -286,77 +325,105 @@ async def execute_workflow(
         execution_id: 执行记录 ID
         db: 数据库会话
     """
-    # 1. 加载执行记录
-    result = await db.execute(select(Execution).where(Execution.id == execution_id))
-    execution = result.scalar_one_or_none()
-    if not execution:
-        return
+    try:
+        # 1. 加载执行记录
+        result = await db.execute(select(Execution).where(Execution.id == execution_id))
+        execution = result.scalar_one_or_none()
+        if not execution:
+            logger.warning(f"执行记录不存在: {execution_id}")
+            return
 
-    # 2. 加载步骤定义并构建 DAG
-    step_result = await db.execute(
-        select(Step).where(Step.workflow_id == execution.workflow_id).order_by(Step.order)
-    )
-    db_steps = step_result.scalars().all()
-    dag_steps = _build_dag_steps(db_steps)
-    sorted_steps = _topological_sort(dag_steps)
-    if len(sorted_steps) != len(dag_steps):
-        sorted_ids = {s["id"] for s in sorted_steps}
-        cycle_ids = [s["id"] for s in dag_steps if s["id"] not in sorted_ids]
-        execution.status = ExecutionStatus.FAILED
-        execution.finished_at = datetime.now(timezone.utc)
-        execution.result = {"error": f"工作流包含循环依赖，无法执行", "cycle_steps": cycle_ids}
-        await db.commit()
-        return
-
-    # 3. 初始化执行状态
-    execution.status = ExecutionStatus.RUNNING
-    execution.started_at = datetime.now(timezone.utc)
-
-    step_exec_map: dict[str, StepExecution] = {}
-    for step in sorted_steps:
-        se = StepExecution(
-            execution_id=execution.id,
-            step_id=uuid.UUID(step["id"]),
-            status=StepExecutionStatus.PENDING,
+        # 2. 加载步骤定义并构建 DAG
+        step_result = await db.execute(
+            select(Step).where(Step.workflow_id == execution.workflow_id).order_by(Step.order)
         )
-        db.add(se)
-        step_exec_map[step["id"]] = se
-
-    await db.commit()
-
-    # 构建 step_map 供 condition 步骤做分支跳过
-    step_map = {s["id"]: s for s in sorted_steps}
-
-    # 4. 逐步执行
-    for step in sorted_steps:
-        se = step_exec_map[step["id"]]
-        step_type = step["step_type"]
-
-        if step_type == "trigger":
-            await _execute_trigger_step(se)
+        db_steps = step_result.scalars().all()
+        dag_steps = _build_dag_steps(db_steps)
+        sorted_steps = _topological_sort(dag_steps)
+        if len(sorted_steps) != len(dag_steps):
+            sorted_ids = {s["id"] for s in sorted_steps}
+            cycle_ids = [s["id"] for s in dag_steps if s["id"] not in sorted_ids]
+            execution.status = ExecutionStatus.FAILED
+            execution.finished_at = datetime.now(timezone.utc)
+            execution.result = {"error": MSG_WORKFLOW_CYCLE, "cycle_steps": cycle_ids}
             await db.commit()
-            continue
+            return
 
-        if step_type == "tool":
-            should_continue = await _execute_tool_step(step, se, db)
-            if not should_continue:
+        # 3. 初始化执行状态
+        execution.status = ExecutionStatus.RUNNING
+        execution.started_at = datetime.now(timezone.utc)
+
+        step_exec_map: dict[str, StepExecution] = {}
+        for step in sorted_steps:
+            # 幂等性检查：避免重复创建 StepExecution
+            existing_result = await db.execute(
+                select(StepExecution).where(
+                    StepExecution.execution_id == execution.id,
+                    StepExecution.step_id == uuid.UUID(step["id"]),
+                )
+            )
+            existing_se = existing_result.scalar_one_or_none()
+            if existing_se:
+                step_exec_map[step["id"]] = existing_se
+                logger.debug(f"步骤执行记录已存在，跳过创建: {step['id']}")
+            else:
+                se = StepExecution(
+                    execution_id=execution.id,
+                    step_id=uuid.UUID(step["id"]),
+                    status=StepExecutionStatus.PENDING,
+                )
+                db.add(se)
+                step_exec_map[step["id"]] = se
+
+        await db.commit()
+
+        # 构建 step_map 供 condition 步骤做分支跳过
+        step_map = {s["id"]: s for s in sorted_steps}
+
+        # 4. 逐步执行
+        for step in sorted_steps:
+            se = step_exec_map[step["id"]]
+            step_type = step["step_type"]
+
+            if step_type == "trigger":
+                await _execute_trigger_step(se)
+                await db.commit()
+                continue
+
+            if step_type == "tool":
+                should_continue = await _execute_tool_step(step, se, db)
+                if not should_continue:
+                    execution.status = ExecutionStatus.FAILED
+                    execution.finished_at = datetime.now(timezone.utc)
+                    execution.result = {"error": f"{MSG_STEP_FAILED}: {step['id']}"}
+                    await db.commit()
+                    return
+                continue
+
+            if step_type == "condition":
+                await _execute_condition_step(step, se, step_exec_map, step_map, db)
+                continue
+
+            if step_type == "approval":
+                await _execute_approval_step(step, se, execution, db)
+                return  # 暂停，等待审批
+
+        # 5. 全部完成
+        execution.status = ExecutionStatus.SUCCESS
+        execution.finished_at = datetime.now(timezone.utc)
+        execution.result = {"message": MSG_WORKFLOW_COMPLETE}
+        await db.commit()
+
+    except Exception as e:
+        logger.exception(f"工作流执行异常: {execution_id}, 错误: {e}")
+        try:
+            # 尝试更新执行状态为失败
+            result = await db.execute(select(Execution).where(Execution.id == execution_id))
+            execution = result.scalar_one_or_none()
+            if execution:
                 execution.status = ExecutionStatus.FAILED
                 execution.finished_at = datetime.now(timezone.utc)
-                execution.result = {"error": f"步骤 {step['id']} 执行失败"}
+                execution.result = {"error": str(e)}
                 await db.commit()
-                return
-            continue
-
-        if step_type == "condition":
-            await _execute_condition_step(step, se, step_exec_map, step_map, db)
-            continue
-
-        if step_type == "approval":
-            await _execute_approval_step(step, se, execution, db)
-            return  # 暂停，等待审批
-
-    # 5. 全部完成
-    execution.status = ExecutionStatus.SUCCESS
-    execution.finished_at = datetime.now(timezone.utc)
-    execution.result = {"message": "工作流执行完成"}
-    await db.commit()
+        except Exception as inner_e:
+            logger.exception(f"更新执行状态失败: {inner_e}")
