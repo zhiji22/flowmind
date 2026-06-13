@@ -106,7 +106,7 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_message },
         ],
-        model="qwen-max",
+        model="qwen-plus",
     )
 
     content = response.choices[0].message.content or ""
