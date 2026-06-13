@@ -22,5 +22,25 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-ans), Arial, Helvetica, sans-serif;
+}
+
+/*
+ * Fix: sonner [data-icon] 注入了 height:16px + margin 偏移,
+ * 导致 loading 转圈与文本无法水平对齐。
+ * 覆盖为自适应尺寸并清除 margin。
+ */
+[data-sonner-toast] [data-icon] {
+  height: auto;
+  width: auto;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-sonner-toast] [data-icon] svg {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
