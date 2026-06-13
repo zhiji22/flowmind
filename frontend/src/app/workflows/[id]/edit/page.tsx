@@ -6,6 +6,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { workflowApi, executionApi, AuthenticationError } from "@/lib/api";
 import type { WorkflowDetail } from "@/lib/api";
 import { getToken } from "@/lib/auth";
+import { withToast, showError } from "@/lib/toast";
 import { dagToFlow, flowToPositions } from "@/lib/workflow-utils";
 import WorkflowEditor from "@/components/workflow/WorkflowEditor";
 import type { Node, Edge } from "@xyflow/react";
@@ -22,6 +23,7 @@ export default function EditWorkflowPage() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     if (!getToken()) {
@@ -48,7 +50,7 @@ export default function EditWorkflowPage() {
           router.replace("/login");
           return;
         }
-        alert("加载工作流失败");
+        showError("加载工作流失败");
         router.push("/dashboard");
       } finally {
         if (!cancelled) setLoading(false);
@@ -75,33 +77,44 @@ export default function EditWorkflowPage() {
           }
         : null;
 
-      await workflowApi.update(workflowId, {
-        name,
-        description,
-        dag_json: updatedDag as Record<string, unknown>,
-      });
-      alert("保存成功！");
+      await withToast(
+        workflowApi.update(workflowId, {
+          name,
+          description,
+          dag_json: updatedDag as Record<string, unknown>,
+        }),
+        {
+          loading: "正在保存...",
+          success: "保存成功",
+        }
+      );
     } catch (err) {
       if (err instanceof AuthenticationError) {
         router.replace("/login");
         return;
       }
-      alert("保存失败");
+      // withToast 已显示错误 toast
     } finally {
       setSaving(false);
     }
   }, [workflowId, name, description, dagJson, nodes, router]);
 
   async function handleRun() {
+    setRunning(true);
     try {
-      const execution = await executionApi.trigger(workflowId);
+      const execution = await withToast(executionApi.trigger(workflowId), {
+        loading: "正在启动执行...",
+        success: "执行已启动",
+      });
       router.push(`/workflows/${workflowId}/run?executionId=${execution.id}`);
     } catch (err) {
       if (err instanceof AuthenticationError) {
         router.replace("/login");
         return;
       }
-      alert("执行失败");
+      // withToast 已显示错误 toast
+    } finally {
+      setRunning(false);
     }
   }
 
@@ -132,9 +145,10 @@ export default function EditWorkflowPage() {
         <div className="flex gap-2">
           <button
             onClick={handleRun}
-            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
+            disabled={running}
+            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
           >
-            执行
+            {running ? "执行中..." : "执行"}
           </button>
           <button
             onClick={handleSave}

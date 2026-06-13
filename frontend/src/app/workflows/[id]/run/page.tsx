@@ -6,6 +6,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { workflowApi, executionApi, AuthenticationError } from "@/lib/api";
 import type { StepExecution } from "@/lib/api";
 import { getToken } from "@/lib/auth";
+import { withToast, showError } from "@/lib/toast";
 import { dagToFlow } from "@/lib/workflow-utils";
 import ExecutionMonitor from "@/components/workflow/ExecutionMonitor";
 import type { Node, Edge } from "@xyflow/react";
@@ -25,6 +26,7 @@ function RunWorkflowContent() {
   const [stepExecutions, setStepExecutions] = useState<StepExecution[]>([]);
   const [executionStatus, setExecutionStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
 
   // 初始加载
   useEffect(() => {
@@ -59,7 +61,7 @@ function RunWorkflowContent() {
           router.replace("/login");
           return;
         }
-        alert("加载数据失败");
+        showError("加载数据失败");
         router.push("/dashboard");
       } finally {
         if (!cancelled) setLoading(false);
@@ -92,8 +94,12 @@ function RunWorkflowContent() {
 
   async function handleRetry() {
     if (!executionId) return;
+    setRetrying(true);
     try {
-      const execution = await executionApi.retry(executionId);
+      const execution = await withToast(executionApi.retry(executionId), {
+        loading: "正在重试...",
+        success: "重试成功",
+      });
       setExecutionStatus(execution.status);
       const updated = await executionApi.get(executionId);
       setStepExecutions(updated.step_executions);
@@ -102,7 +108,9 @@ function RunWorkflowContent() {
         router.replace("/login");
         return;
       }
-      alert("重试失败");
+      // withToast 已显示错误 toast
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -142,9 +150,10 @@ function RunWorkflowContent() {
           {executionStatus === "failed" && (
             <button
               onClick={handleRetry}
-              className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600"
+              disabled={retrying}
+              className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50"
             >
-              重试
+              {retrying ? "重试中..." : "重试"}
             </button>
           )}
           <button

@@ -4,12 +4,14 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { workflowApi, executionApi, AuthenticationError } from "@/lib/api";
 import { getToken, removeToken } from "@/lib/auth";
+import { withToast } from "@/lib/toast";
 import type { WorkflowListItem } from "@/types";
 
 export default function DashboardPage() {
   const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [operatingId, setOperatingId] = useState<string | null>(null);
 
   // 页面加载时：检查登录状态 + 获取数据
   useEffect(() => {
@@ -45,23 +47,36 @@ export default function DashboardPage() {
 
   /** 删除工作流 */
   async function handleDelete(id: string) {
+    if (operatingId) return;
     if (!confirm("确定要删除这个工作流吗？")) return;
+    setOperatingId(id);
     try {
-      await workflowApi.delete(id);
+      await withToast(workflowApi.delete(id), {
+        loading: "正在删除...",
+        success: "删除成功",
+      });
       setWorkflows((prev) => prev.filter((w) => w.id !== id));
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "删除失败");
+    } catch {
+      // withToast 已显示错误 toast
+    } finally {
+      setOperatingId(null);
     }
   }
 
   /** 执行工作流 */
   async function handleRun(id: string) {
+    if (operatingId) return;
+    setOperatingId(id);
     try {
-      const execution = await executionApi.trigger(id);
-      // 跳转到执行监控页面
+      const execution = await withToast(executionApi.trigger(id), {
+        loading: "正在启动执行...",
+        success: "执行已启动",
+      });
       router.push(`/workflows/${id}/run?executionId=${execution.id}`);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "执行失败");
+    } catch {
+      // withToast 已显示错误 toast
+    } finally {
+      setOperatingId(null);
     }
   }
 
@@ -160,21 +175,24 @@ export default function DashboardPage() {
               >
                 <button
                   onClick={() => router.push(`/workflows/${workflow.id}/edit`)}
-                  className="flex-1 rounded-lg bg-blue-50 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-100"
+                  disabled={operatingId === workflow.id}
+                  className="flex-1 rounded-lg bg-blue-50 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-100 disabled:opacity-50"
                 >
                   编辑
                 </button>
                 <button
                   onClick={() => handleRun(workflow.id)}
-                  className="flex-1 rounded-lg bg-green-50 py-1.5 text-sm font-medium text-green-600 hover:bg-green-100"
+                  disabled={operatingId === workflow.id}
+                  className="flex-1 rounded-lg bg-green-50 py-1.5 text-sm font-medium text-green-600 hover:bg-green-100 disabled:opacity-50"
                 >
-                  执行
+                  {operatingId === workflow.id ? "执行中..." : "执行"}
                 </button>
                 <button
                   onClick={() => handleDelete(workflow.id)}
-                  className="flex-1 rounded-lg bg-red-50 py-1.5 text-sm font-medium text-red-600 hover:bg-red-100"
+                  disabled={operatingId === workflow.id}
+                  className="flex-1 rounded-lg bg-red-50 py-1.5 text-sm font-medium text-red-600 hover:bg-red-100 disabled:opacity-50"
                 >
-                  删除
+                  {operatingId === workflow.id ? "删除中..." : "删除"}
                 </button>
               </div>
             </div>

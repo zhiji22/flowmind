@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { chatApi, workflowApi } from "@/lib/api";
 import { getToken } from "@/lib/auth";
+import { withToast } from "@/lib/toast";
 import type { ChatMessage as ChatMessageType } from "@/types";
 import ChatMessage from "@/components/chat/ChatMessage";
 import ChatInput from "@/components/chat/ChatInput";
@@ -83,10 +84,16 @@ export default function ChatPage() {
 
     setCreating(true);
     try {
-      const workflow = await workflowApi.create(lastUserMessage.content);
+      const workflow = await withToast(
+        workflowApi.create(lastUserMessage.content),
+        {
+          loading: "正在创建工作流...",
+          success: "工作流创建成功",
+        }
+      );
       setPreviewWorkflow(workflow);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "创建工作流失败");
+    } catch {
+      // withToast 已显示错误 toast
     } finally {
       setCreating(false);
     }
