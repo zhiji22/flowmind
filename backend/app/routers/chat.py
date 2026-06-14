@@ -1,38 +1,54 @@
+"""聊天 API：SSE 流式返回 Agent 的思考过程"""
+import json
+
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.models.user import User
 from app.routers.auth import get_current_user
-from app.services.agent_engine import run_agent
-
+from app.services.agent_engine import run_agent_stream
 
 router = APIRouter()
+
 
 class ChatRequest(BaseModel):
     message: str
 
 
-class ThoughtStep(BaseModel):
-    step: int
-    thought: str
-    action: str
-    observation: str
-
-class ChatResponse(BaseModel):
-    thoughts: list[ThoughtStep]
-    final_answer: str
-    iterations: int
+def _sse(event: str, data: dict) -> str:
+    """把事件格式化为 SSE 文本块。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@router.post("", response_model=ChatResponse)
+@router.post("")
 async def chat(
     req: ChatRequest,
     current_user: User = Depends(get_current_user),
 ):
-    result = await run_agent(req.message)
+    """
+    SSE 流式聊天接口。
 
-    return ChatResponse(
-        thoughts=result["thoughts"],
-        final_answer=result["final_answer"],
-        iterations=result["iterations"],
+    返回 text/event-stream，逐个推送：
+      event: start       → Agent 开始
+      event: thought     → 思考 + 行动
+      event: observation → 观察结果
+      event: final       → 最终回答
+      event: error       → 异常
+    """
+    async def event_generator():
+        try:
+            async for event in run_agent_stream(req.message):
+                yield _sse(event["event"], event["data"])
+        except Exception as e:
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",        # 禁用缓存，保证实时推送
+            "X-Accel-Buffering": "no",          # 禁用 nginx 缓冲（生产环境用）
+            "Connection": "keep-alive",
+        },
     )

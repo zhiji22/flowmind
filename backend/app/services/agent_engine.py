@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, AsyncIterator
 
 from app.config import settings
 from app.services.llm_client import chat_completion
@@ -104,5 +104,98 @@ async def run_agent(user_message: str) -> dict[str, Any]:
         "final_answer": "达到最大迭代次数，任务未完成。请简化你的需求或分步提问。",
         "tool_calls": tool_calls_log,
         "iterations": iterations
+    }
+
+async def run_agent_stream(user_message: str) -> AsyncIterator[dict[str, Any]]:
+    """
+    流式版 ReAct Agent：每完成一个阶段就 yield 一个事件。
+
+    事件类型：
+      - start:       Agent 开始
+      - thought:     决定调用某个工具（思考 + 行动）
+      - observation: 工具执行结果
+      - final:       最终回答
+      - error:       发生异常
+    """
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    tools = registry.get_all_schemas()
+    iterations = 0
+
+    yield {"event": "start", "data": {"message": "Agent 开始思考"}}
+
+    while iterations < settings.AGENT_MAX_ITERATIONS:
+        iterations += 1
+
+        try:
+            response = await chat_completion(messages, tools=tools if tools else None)
+        except Exception as e:
+            yield {"event": "error", "data": {"message": f"模型调用失败: {e}"}}
+            return
+
+        choice = response.choices[0]
+
+        # 没有工具调用 → 最终回答
+        if not choice.message.tool_calls:
+            final_answer = choice.message.content or ""
+            yield {
+                "event": "final",
+                "data": {"answer": final_answer, "iterations": iterations},
+            }
+            return
+
+        messages.append(choice.message.model_dump())
+
+        # 逐个执行工具，每步都推送事件
+        for tool_call in choice.message.tool_calls:
+            tool_name = tool_call.function.name
+            try:
+                tool_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            # 推送思考 + 行动（observation 暂为空，前端可先显示思考过程）
+            yield {
+                "event": "thought",
+                "data": {
+                    "step": iterations,
+                    "thought": f"我需要使用工具 {tool_name} 来获取信息",
+                    "action": f"{tool_name}({json.dumps(tool_args, ensure_ascii=False)})",
+                    "observation": "",
+                },
+            }
+
+            # 执行工具
+            tool = registry.get(tool_name)
+            if not tool:
+                result = f"错误：工具 '{tool_name}' 不存在"
+            else:
+                try:
+                    result = await tool.execute(**tool_args)
+                except Exception as e:
+                    result = f"工具执行出错: {e}"
+
+            # 推送观察结果
+            yield {
+                "event": "observation",
+                "data": {
+                    "step": iterations,
+                    "observation": result[:500],
+                },
+            }
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": result,
+            })
+
+    # 超过最大迭代次数
+    yield {
+        "event": "final",
+        "data": {"answer": "达到最大迭代次数，任务未完成。", "iterations": iterations},
     }
     
