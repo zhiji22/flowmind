@@ -7,6 +7,7 @@
 import json
 from typing import Any
 
+from app.config import settings
 from app.models.workflow import StepType
 from app.services.llm_client import chat_completion
 from app.tools.base import registry
@@ -18,11 +19,15 @@ _DANGEROUS_CONFIG_KEYS = frozenset({"__class__", "__dict__", "__module__", "eval
 _VALID_STEP_TYPES = frozenset(st.value for st in StepType)
 
 
-def _check_dangerous_keys(obj: Any, path: str) -> None:
-    """递归检查字典和列表中所有层级的危险 key。"""
+def _check_dangerous_keys(obj: Any, path: str, depth: int = 0, max_depth: int | None = None) -> None:
+    """递归检查字典和列表中所有层级的危险 key，并限制嵌套深度。"""
+    if max_depth is None:
+        max_depth = settings.WORKFLOW_CONFIG_MAX_DEPTH
+    if depth > max_depth:
+        raise ValueError(f"{path} 嵌套深度超过上限 {max_depth}")
     if isinstance(obj, list):
         for i, item in enumerate(obj):
-            _check_dangerous_keys(item, f"{path}[{i}]")
+            _check_dangerous_keys(item, f"{path}[{i}]", depth + 1, max_depth)
         return
     if not isinstance(obj, dict):
         return
@@ -30,7 +35,7 @@ def _check_dangerous_keys(obj: Any, path: str) -> None:
     if dangerous:
         raise ValueError(f"{path} 包含不允许的 key: {dangerous}")
     for k, v in obj.items():
-        _check_dangerous_keys(v, f"{path}.{k}")
+        _check_dangerous_keys(v, f"{path}.{k}", depth + 1, max_depth)
 
 
 # 指导 LLM 生成工作流 DAG 的 System Prompt
@@ -74,12 +79,14 @@ WORKFLOW_SYSTEM_PROMPT = """你是一个工作流设计专家。用户会用自�
 def _build_tools_description() -> str:
     """将注册表中的工具格式化为 LLM 能理解的描述文本"""
     descriptions = []
-    for tool in registry._tools.values():
+    for name in registry.list_names():
+        tool = registry.get(name)
+        if tool is None:
+            continue
         params = tool.get_parameters_schema().get("properties", {})
         param_str = ", ".join(
             f"{k}: {v.get('description', v.get('type', ''))}" for k, v in params.items()
         )
-
         descriptions.append(f"- {tool.name}({param_str}): {tool.description}")
     return "\n".join(descriptions)
 
@@ -111,6 +118,13 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
 
     content = response.choices[0].message.content or ""
 
+    # 输出体积上限（防 DoS / 上下文污染）
+    if len(content) > settings.LLM_MAX_OUTPUT_CHARS:
+        raise ValueError(
+            f"LLM 返回内容超过 {settings.LLM_MAX_OUTPUT_CHARS} 字符上限"
+            f"（实际 {len(content)}）"
+        )
+
     # 如果返回json 包裹内容，提取
     if "```json" in content:
         content = content.split("```json")[1].split("```")[0].strip()
@@ -122,11 +136,16 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
         workflow_data = json.loads(content)
     except json.JSONDecodeError:
         raise ValueError(f"LLM 返回的内容不是合法 JSON: {content[:200]}")
-    
+
     # 基础验证：至少要有一个步骤，第一步是trigger
     steps = workflow_data.get("steps", [])
     if not steps:
         raise ValueError("生成的工作流没有步骤")
+
+    if len(steps) > settings.WORKFLOW_MAX_STEPS:
+        raise ValueError(
+            f"工作流步骤数 {len(steps)} 超过上限 {settings.WORKFLOW_MAX_STEPS}"
+        )
 
     if steps[0].get("step_type") != "trigger":
         raise ValueError("工作流第一步必须是 trigger 类型")
@@ -144,11 +163,11 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
             if tool_name and tool_name not in available_tools:
                 raise ValueError(f"步骤引用了不存在的工具: {tool_name}")
 
-        # 清理 config 中的危险 key（递归检查）
+        # 清理 config 中的危险 key（递归检查 + 嵌套深度上限）
         config = step.get("config", {})
         if isinstance(config, dict):
             _check_dangerous_keys(config, "config")
-            
+
     return workflow_data
 
 
