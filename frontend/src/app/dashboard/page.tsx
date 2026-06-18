@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { workflowApi, executionApi, AuthenticationError } from "@/lib/api";
+import { authApi, workflowApi, executionApi, AuthenticationError } from "@/lib/api";
 import { getToken, removeToken } from "@/lib/auth";
 import { withToast } from "@/lib/toast";
 import type { WorkflowListItem } from "@/types";
@@ -80,10 +80,14 @@ export default function DashboardPage() {
     }
   }
 
-  /** 退出登录 */
-  function handleLogout() {
-    removeToken();
-    router.push("/login");
+  /** 退出登录：先通知后端将 token 加入黑名单，再清除本地状态 */
+  async function handleLogout() {
+    try {
+      await authApi.logout();
+    } finally {
+      removeToken();
+      router.push("/login");
+    }
   }
 
   // 状态标签颜色

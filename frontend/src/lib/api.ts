@@ -30,8 +30,15 @@ async function request<T>(
   });
 
   if (response.status === 401) {
-    removeToken();
-    throw new AuthenticationError("登录已过期，请重新登录");
+    // 区分两类 401：
+    // - 请求已携带 token（受保护接口）：token 过期/无效 → 清除并提示重新登录
+    // - 请求未携带 token（如登录/注册）：凭证错误 → 透传后端 detail（如"邮箱或密码错误"）
+    if (token) {
+      removeToken();
+      throw new AuthenticationError("登录已过期，请重新登录");
+    }
+    const error = await response.json().catch(() => ({ detail: "请求失败" }));
+    throw new Error(error.detail || "请求失败");
   }
 
   if (!response.ok) {
@@ -57,33 +64,145 @@ export const authApi = {
       body: JSON.stringify({ email, password }),
     }),
 
+  /** 通知后端将当前 token 加入黑名单。失败不抛错（前端仍会清除本地 token） */
+  logout: () =>
+    request<{ message: string }>("/api/auth/logout", { method: "POST" }).catch(() => null),
+
   me: () =>
     request<{ id: string; email: string; created_at: string }>("/api/auth/me"),
 };
 
 // ===== 聊天 API =====
 
+export interface ChatThought {
+  step: number;
+  thought: string;
+  action: string;
+  observation: string;
+}
+
+export interface ChatStreamHandlers {
+  /** 收到任意 SSE 事件时实时回调（可选，用于流式渲染思考过程） */
+  onEvent?: (event: string, data: Record<string, unknown>) => void;
+}
+
 const CHAT_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** 解析单个 SSE 事件块（形如 "event: thought\\ndata: {...}"）。 */
+function parseSSEChunk(raw: string): { event: string; data: string } | null {
+  let event = "message";
+  let data = "";
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  return data ? { event, data } : null;
+}
+
+// ===== 聊天 API（SSE 流式）=====
+//
+// 后端 /api/chat 返回 text/event-stream（event: start/thought/observation/final/error），
+// 不能用 response.json() 解析——那会报 "Unexpected token 'e', event: ... is not valid JSON"。
+
 export const chatApi = {
-  send: (message: string) => {
+  async send(
+    message: string,
+    handlers?: ChatStreamHandlers
+  ): Promise<{ thoughts: ChatThought[]; final_answer: string; iterations: number }> {
+    const token = getToken();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
 
-    return request<{
-      thoughts: Array<{
-        step: number;
-        thought: string;
-        action: string;
-        observation: string;
-      }>;
-      final_answer: string;
-      iterations: number;
-    }>("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({ message }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeoutId));
+    try {
+      const resp = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          if (token) {
+            removeToken();
+            throw new AuthenticationError("登录已过期，请重新登录");
+          }
+          const e = await resp.json().catch(() => ({ detail: "请求失败" }));
+          throw new Error(e.detail || "请求失败");
+        }
+        const e = await resp.json().catch(() => ({ detail: "请求失败" }));
+        throw new Error(e.detail || `HTTP ${resp.status}`);
+      }
+      if (!resp.body) throw new Error("响应不支持流式读取");
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const thoughts: ChatThought[] = [];
+      let finalAnswer = "";
+      let iterations = 0;
+      let errMsg = "";
+
+      const handle = (event: string, data: Record<string, unknown>): void => {
+        handlers?.onEvent?.(event, data);
+        switch (event) {
+          case "thought":
+            thoughts.push({
+              step: Number(data.step ?? 0),
+              thought: String(data.thought ?? ""),
+              action: String(data.action ?? ""),
+              observation: String(data.observation ?? ""),
+            });
+            break;
+          case "observation": {
+            // thought / observation 成对按序到达，填入最近一条 observation 为空的 thought
+            const target = [...thoughts].reverse().find((t) => t.observation === "");
+            if (target) target.observation = String(data.observation ?? "");
+            break;
+          }
+          case "final":
+            finalAnswer = String(data.answer ?? "");
+            iterations = Number(data.iterations ?? 0);
+            break;
+          case "error":
+            errMsg = String(data.message ?? "Agent 出错");
+            break;
+        }
+      };
+
+      const dispatch = (raw: string): void => {
+        const parsed = parseSSEChunk(raw);
+        if (!parsed) return;
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(parsed.data);
+        } catch {
+          data = { raw: parsed.data };
+        }
+        handle(parsed.event, data);
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep = buffer.indexOf("\n\n");
+        while (sep !== -1) {
+          dispatch(buffer.slice(0, sep));
+          buffer = buffer.slice(sep + 2);
+          sep = buffer.indexOf("\n\n");
+        }
+      }
+      if (buffer.trim()) dispatch(buffer); // flush 尾部残余
+
+      if (errMsg) throw new Error(errMsg);
+      return { thoughts, final_answer: finalAnswer, iterations };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   },
 };
 
