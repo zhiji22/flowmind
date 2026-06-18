@@ -6,12 +6,20 @@ from pydantic import BaseModel, EmailStr, Field
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6, max_length=10)
+    # bcrypt 只对前 72 字节敏感；后端 hash 前会按 UTF-8 字节裁剪到 72。
+    # 这里仅做基础长度限制，避免超大请求体。
+    password: str = Field(min_length=8, max_length=128)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ResetPasswordRequest(BaseModel):
+    """DEV 专用直接重置密码接口的请求体（生产环境禁用该接口）。"""
+    email: EmailStr
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -21,7 +29,7 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: uuid.UUID
-    email: str
+    email: EmailStr
     created_at: datetime
 
-    model_config = { "from_attributes": True }
+    model_config = {"from_attributes": True}
