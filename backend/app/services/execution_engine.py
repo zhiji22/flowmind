@@ -290,20 +290,31 @@ async def _execute_approval_step(
     execution: Execution,
     db: AsyncSession,
 ) -> None:
-    """暂停执行，创建审批请求记录。"""
+    """暂停执行，创建审批请求记录（幂等：已有 PENDING 审批不重复创建）。"""
     from app.models.execution import ApprovalRequest, ApprovalStatus
 
     se.status = StepExecutionStatus.RUNNING
     se.started_at = datetime.now(timezone.utc)
     await db.commit()
 
-    approval = ApprovalRequest(
-        execution_id=execution.id,
-        step_id=uuid.UUID(step["id"]),
-        status=ApprovalStatus.PENDING,
+    # 幂等：避免同一 (execution, step) 反复 create
+    step_uuid = uuid.UUID(step["id"])
+    existing = await db.execute(
+        select(ApprovalRequest).where(
+            ApprovalRequest.execution_id == execution.id,
+            ApprovalRequest.step_id == step_uuid,
+            ApprovalRequest.status == ApprovalStatus.PENDING,
+        )
     )
-    db.add(approval)
-    await db.commit()
+    approval = existing.scalar_one_or_none()
+    if approval is None:
+        approval = ApprovalRequest(
+            execution_id=execution.id,
+            step_id=step_uuid,
+            status=ApprovalStatus.PENDING,
+        )
+        db.add(approval)
+        await db.commit()
 
     execution.status = ExecutionStatus.WAITING_FOR_APPROVAL
     execution.result = {"waiting_for_approval": str(approval.id)}
@@ -381,9 +392,17 @@ async def execute_workflow(
         step_map = {s["id"]: s for s in sorted_steps}
 
         # 4. 逐步执行
+        # 已完成 / 跳过 / 已通过审批 的步骤跳过——支持从审批恢复后再次进入此函数
+        _DONE_STATUSES = {
+            StepExecutionStatus.SUCCESS,
+            StepExecutionStatus.SKIPPED,
+        }
         for step in sorted_steps:
             se = step_exec_map[step["id"]]
             step_type = step["step_type"]
+
+            if se.status in _DONE_STATUSES:
+                continue
 
             if step_type == "trigger":
                 await _execute_trigger_step(se)
@@ -405,6 +424,12 @@ async def execute_workflow(
                 continue
 
             if step_type == "approval":
+                # 已通过审批的 step 标记为 SUCCESS 后继续；否则暂停等待审批
+                if se.status == StepExecutionStatus.RUNNING and (se.output_data or {}).get("approved") is True:
+                    se.status = StepExecutionStatus.SUCCESS
+                    se.finished_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    continue
                 await _execute_approval_step(step, se, execution, db)
                 return  # 暂停，等待审批
 

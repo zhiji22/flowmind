@@ -74,10 +74,10 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
-              maxLength={10}
+              minLength={8}
+              maxLength={128}
               className="mt-1 block w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              placeholder="6-10位密码"
+              placeholder="至少 8 位"
             />
           </div>
 

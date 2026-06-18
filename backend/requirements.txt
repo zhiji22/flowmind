@@ -12,8 +12,13 @@ pydantic==2.10.3
 pydantic-settings==2.7.1
 openai==1.58.1
 duckduckgo-search==7.3.0
+tavily-python==0.5.0
 structlog==24.4.0
 python-multipart==0.0.20
-bcrypt==4.0.1
+bcrypt==3.2.2
 email-validator>=2.1.0
 aiosmtplib==3.0.2
+
+# === 测试依赖 ===
+pytest==8.3.4
+pytest-asyncio==0.25.2

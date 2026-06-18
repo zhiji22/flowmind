@@ -1,11 +1,11 @@
 """执行 API：触发工作流执行、查询执行状态、重试失败步骤"""
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import async_session, get_db
 from app.models.execution import Execution, ExecutionStatus, StepExecution
 from app.models.user import User
 from app.models.workflow import Workflow
@@ -16,16 +16,24 @@ from app.services.execution_engine import execute_workflow
 router = APIRouter()
 
 
+async def _run_execution_in_background(execution_id: uuid.UUID) -> None:
+    """在独立 session 中执行工作流，避免占用 HTTP request 的 session。"""
+    async with async_session() as db:
+        await execute_workflow(execution_id, db)
+
+
 @router.post("/{workflow_id}", response_model=ExecutionResponse)
 async def trigger_execution(
     workflow_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     触发工作流执行。
 
-    创建一条 Execution 记录，然后调用执行引擎。
+    创建一条 Execution 记录后立即返回，工作流执行在后台进行；
+    前端通过 GET /api/executions/{id} 轮询状态。
     """
     # 验证工作流存在且属于当前用户
     result = await db.execute(
@@ -44,11 +52,9 @@ async def trigger_execution(
     await db.commit()
     await db.refresh(execution)
 
-    # 执行工作流（当前是同步执行，后续 Step 8 会改为异步）
-    await execute_workflow(execution.id, db)
+    # 后台执行工作流（不阻塞 HTTP worker）
+    background_tasks.add_task(_run_execution_in_background, execution.id)
 
-    # 重新加载执行记录（含更新后的状态）
-    await db.refresh(execution)
     return execution
 
 
@@ -73,13 +79,12 @@ async def get_execution(
 @router.post("/{execution_id}/retry", response_model=ExecutionResponse)
 async def retry_execution(
     execution_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    重试失败的执行。
-
-    找到失败的步骤，重置状态，重新执行。
+    重试失败的执行：清理 step_executions 后在后台重新执行。
     """
     result = await db.execute(
         select(Execution)
@@ -103,9 +108,9 @@ async def retry_execution(
         delete(StepExecution).where(StepExecution.execution_id == execution.id)
     )
     await db.commit()
-
-    # 重新执行
-    await execute_workflow(execution.id, db)
-
     await db.refresh(execution)
+
+    # 后台重新执行
+    background_tasks.add_task(_run_execution_in_background, execution.id)
+
     return execution
