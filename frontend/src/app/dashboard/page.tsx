@@ -110,6 +110,12 @@ export default function DashboardPage() {
           </h1>
           <div className="flex items-center gap-4">
             <button
+              onClick={() => router.push("/approvals")}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+            >
+              审批
+            </button>
+            <button
               onClick={() => router.push("/chat")}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
             >

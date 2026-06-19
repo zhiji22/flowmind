@@ -282,3 +282,41 @@ export const executionApi = {
   retry: (executionId: string) =>
     request<{ id: string; workflow_id: string; status: string }>(`/api/executions/${executionId}/retry`, { method: "POST" }),
 };
+
+// ===== 审批 API =====
+
+export interface ApprovalRequest {
+  id: string;
+  execution_id: string;
+  step_id: string;
+  status: string;
+  requested_at: string;
+  resolved_at: string | null;
+  resolver_id: string | null;
+  // 上下文
+  workflow_id: string | null;
+  workflow_name: string | null;
+  step_type: string | null;
+  step_config: Record<string, unknown> | null;
+}
+
+export const approvalApi = {
+  /** 列出待审批请求 */
+  list: () =>
+    request<ApprovalRequest[]>("/api/approvals"),
+
+  /** 通过审批（可附备注） */
+  approve: (approvalId: string, note?: string) =>
+    request<ApprovalRequest>(`/api/approvals/${approvalId}/approve`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+
+  /** 拒绝审批（可附备注） */
+  reject: (approvalId: string, note?: string) =>
+    request<ApprovalRequest>(`/api/approvals/${approvalId}/reject`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    }),
+};
+

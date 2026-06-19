@@ -56,3 +56,8 @@ export async function withToast<T>(
 export function showError(message: string): void {
   toast.error(message, { duration: 5000 });
 }
+
+/** 仅显示成功 toast（用于不需要 loading 的场景，如审批通过/拒绝） */
+export function showSuccess(message: string): void {
+  toast.success(message, { duration: 3000 });
+}
