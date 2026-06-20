@@ -37,6 +37,10 @@ class WorkflowResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    # 调度信息（来自关联的 Schedule；None 表示未配置定时）
+    cron_expr: str | None = None
+    schedule_enabled: bool | None = None
+    next_run: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -48,5 +52,31 @@ class WorkflowListResponse(BaseModel):
     description: str | None
     status: str
     created_at: datetime
+    # 调度信息（来自关联的 Schedule）
+    cron_expr: str | None = None
+    schedule_enabled: bool | None = None
+    next_run: datetime | None = None
 
     model_config = { "from_attributes": True }
+
+
+class ScheduleRequest(BaseModel):
+    """设置定时调度的请求"""
+    cron_expr: str = Field(..., description="5 段 cron 表达式，如 '0 9 * * *'")
+
+
+class ScheduleResponse(BaseModel):
+    """调度信息"""
+    cron_expr: str | None = None
+    enabled: bool | None = None
+    next_run: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ScheduleToggleResponse(BaseModel):
+    """切换调度状态后返回（含工作流状态，便于前端同步）"""
+    enabled: bool
+    cron_expr: str | None = None
+    next_run: datetime | None = None
+    workflow_status: str

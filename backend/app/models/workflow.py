@@ -38,6 +38,23 @@ class Workflow(Base):
     steps: Mapped[list["Step"]] = relationship("Step", back_populates="workflow", lazy="selectin", cascade="all, delete-orphan")
     schedule: Mapped["Schedule | None"] = relationship("Schedule", back_populates="workflow", uselist=False, cascade="all, delete-orphan")
     executions: Mapped[list["Execution"]] = relationship("Execution", back_populates="workflow", lazy="selectin", cascade="all, delete-orphan")
+    
+    # ---- 调度相关的计算属性（供 response_model 读取）----
+    @property
+    def cron_expr(self) -> str | None:
+        sched = self.schedule
+        return sched.cron_expr if sched else None
+
+    @property
+    def schedule_enabled(self) -> bool | None:
+        sched = self.schedule
+        return sched.enabled if sched else None
+
+    @property
+    def next_run(self) -> datetime | None:
+        sched = self.schedule
+        return sched.next_run if sched else None
+
 
 
 class Step(Base):

@@ -214,6 +214,10 @@ export interface WorkflowItem {
   description: string | null;
   status: string;
   created_at: string;
+  // 调度信息
+  cron_expr: string | null;
+  schedule_enabled: boolean | null;
+  next_run: string | null;
 }
 
 export interface WorkflowDetail {
@@ -224,6 +228,10 @@ export interface WorkflowDetail {
   status: string;
   created_at: string;
   updated_at: string;
+  // 调度信息（后端 WorkflowResponse 同步下发，创建/编辑后即可拿到）
+  cron_expr?: string | null;
+  schedule_enabled?: boolean | null;
+  next_run?: string | null;
 }
 
 export interface StepExecution {
@@ -317,6 +325,36 @@ export const approvalApi = {
     request<ApprovalRequest>(`/api/approvals/${approvalId}/reject`, {
       method: "POST",
       body: JSON.stringify(note ? { note } : {}),
+    }),
+};
+
+// ===== 定时调度 API =====
+
+export interface ScheduleInfo {
+  cron_expr: string | null;
+  enabled: boolean | null;
+  next_run: string | null;
+}
+
+export interface ScheduleToggleResult {
+  enabled: boolean;
+  cron_expr: string | null;
+  next_run: string | null;
+  workflow_status: string;
+}
+
+export const scheduleApi = {
+  /** 设置/更新 cron 定时 */
+  set: (workflowId: string, cronExpr: string) =>
+    request<ScheduleInfo>(`/api/workflows/${workflowId}/schedule`, {
+      method: "POST",
+      body: JSON.stringify({ cron_expr: cronExpr }),
+    }),
+
+  /** 暂停/恢复调度 */
+  toggle: (workflowId: string) =>
+    request<ScheduleToggleResult>(`/api/workflows/${workflowId}/schedule/toggle`, {
+      method: "POST",
     }),
 };
 

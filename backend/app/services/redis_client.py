@@ -6,6 +6,7 @@
 """
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator
 
 import redis.asyncio as redis
@@ -71,4 +72,62 @@ async def subscribe(channel: str) -> AsyncIterator[dict[str, Any]]:
     finally:
         await pubsub.unsubscribe(channel)
         await pubsub.close()
+
+
+class RedisLock:
+    """基于 SET NX EX 的轻量分布式锁（上下文管理器形式）。
+
+    用法::
+
+        async with RedisLock("my_lock", ttl=30) as lock:
+            if not lock.acquired:
+                return  # 别的实例正在跑，直接放弃
+            ...  # 临界区
+
+    实现：
+      - acquire: SET key token NX EX ttl
+      - release: 用 Lua 脚本做 CAS（仅当 value 等于本实例的 token 才删），
+        避免因本进程卡住超过 ttl 而误删别的实例刚拿到的锁。
+    """
+
+    _RELEASE_SCRIPT = """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        else
+            return 0
+        end
+    """
+
+    def __init__(self, key: str, ttl: int = 30) -> None:
+        self.key = f"lock:{key}"
+        self.ttl = ttl
+        self._token = uuid.uuid4().hex
+        self._acquired = False
+
+    @property
+    def acquired(self) -> bool:
+        return self._acquired
+
+    async def __aenter__(self) -> "RedisLock":
+        try:
+            client = await get_redis()
+            self._acquired = await client.set(
+                self.key, self._token, nx=True, ex=self.ttl
+            ) is not None
+        except Exception as e:
+            # Redis 不可用时降级：放行（避免 Redis 抖动直接拖垮业务）。
+            logger.warning(f"Redis 加锁失败 (key={self.key}): {e}")
+            self._acquired = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if not self._acquired:
+            return
+        try:
+            client = await get_redis()
+            await client.eval(self._RELEASE_SCRIPT, 1, self.key, self._token)
+        except Exception as e:
+            logger.warning(f"Redis 释放锁失败 (key={self.key}): {e}")
+        finally:
+            self._acquired = False
         

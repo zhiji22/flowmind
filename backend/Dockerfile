@@ -2,12 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
-
+# Note: no apt-get install needed. This project uses asyncpg (not psycopg2), so
+# libpq-dev is unnecessary, and every dependency (asyncpg, bcrypt, cryptography,
+# pydantic-core, uvicorn[standard] extras, etc.) ships prebuilt cp312 wheels, so
+# build-essential is unnecessary too. Skipping apt avoids flaky Debian mirror
+# downloads and makes the build faster and more reliable.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 COPY . .
 
