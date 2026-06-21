@@ -4,6 +4,7 @@
 核心流程：
   用户自然语言 → 构造 Prompt → 调用 Qwen → 解析 JSON → 验证格式 → 存入数据库
 """
+
 import json
 from typing import Any
 
@@ -13,13 +14,17 @@ from app.services.llm_client import chat_completion
 from app.tools.base import registry
 
 # Keys that should never appear in a step config (prevent injection)
-_DANGEROUS_CONFIG_KEYS = frozenset({"__class__", "__dict__", "__module__", "eval", "exec", "compile", "__import__"})
+_DANGEROUS_CONFIG_KEYS = frozenset(
+    {"__class__", "__dict__", "__module__", "eval", "exec", "compile", "__import__"}
+)
 
 # Allowed step_type values
 _VALID_STEP_TYPES = frozenset(st.value for st in StepType)
 
 
-def _check_dangerous_keys(obj: Any, path: str, depth: int = 0, max_depth: int | None = None) -> None:
+def _check_dangerous_keys(
+    obj: Any, path: str, depth: int = 0, max_depth: int | None = None
+) -> None:
     """递归检查字典和列表中所有层级的危险 key，并限制嵌套深度。"""
     if max_depth is None:
         max_depth = settings.WORKFLOW_CONFIG_MAX_DEPTH
@@ -110,8 +115,8 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
     # 生成工作流
     response = await chat_completion(
         messages=[
-            { "role": "system", "content": system_prompt },
-            { "role": "user", "content": user_message },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
         ],
         model="qwen-plus",
     )
@@ -121,8 +126,7 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
     # 输出体积上限（防 DoS / 上下文污染）
     if len(content) > settings.LLM_MAX_OUTPUT_CHARS:
         raise ValueError(
-            f"LLM 返回内容超过 {settings.LLM_MAX_OUTPUT_CHARS} 字符上限"
-            f"（实际 {len(content)}）"
+            f"LLM 返回内容超过 {settings.LLM_MAX_OUTPUT_CHARS} 字符上限（实际 {len(content)}）"
         )
 
     # 如果返回json 包裹内容，提取
@@ -134,18 +138,30 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
     # 解析 JSON
     try:
         workflow_data = json.loads(content)
-    except json.JSONDecodeError:
-        raise ValueError(f"LLM 返回的内容不是合法 JSON: {content[:200]}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLM 返回的内容不是合法 JSON: {content[:200]}") from e
 
-    # 基础验证：至少要有一个步骤，第一步是trigger
+    # 解析 JSON
+    try:
+        workflow_data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLM 返回的内容不是合法 JSON: {content[:200]}") from e
+
+    validate_workflow_dag(workflow_data)
+    return workflow_data
+
+
+def validate_workflow_dag(workflow_data: dict[str, Any]) -> None:
+    """校验工作流 DAG 结构：步骤数 / 首步 trigger / step_type 合法 / 工具存在 / config 无危险 key。
+
+    create（LLM 生成）和 update（用户编辑）共用此校验，确保编辑路径不能绕过安全检查。
+    """
     steps = workflow_data.get("steps", [])
-    if not steps:
-        raise ValueError("生成的工作流没有步骤")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("工作流没有步骤")
 
     if len(steps) > settings.WORKFLOW_MAX_STEPS:
-        raise ValueError(
-            f"工作流步骤数 {len(steps)} 超过上限 {settings.WORKFLOW_MAX_STEPS}"
-        )
+        raise ValueError(f"工作流步骤数 {len(steps)} 超过上限 {settings.WORKFLOW_MAX_STEPS}")
 
     if steps[0].get("step_type") != "trigger":
         raise ValueError("工作流第一步必须是 trigger 类型")
@@ -167,8 +183,3 @@ async def generate_workflow_from_message(user_message: str, user_email: str = ""
         config = step.get("config", {})
         if isinstance(config, dict):
             _check_dangerous_keys(config, "config")
-
-    return workflow_data
-
-
-

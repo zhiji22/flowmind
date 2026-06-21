@@ -37,7 +37,8 @@ export default function ExecutionMonitor({
   const statusMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const se of stepExecutions) {
-      map.set(se.step_id, se.status);
+      // 优先用 client_id（与 dag_json 节点 id 对齐），回退 step_id
+      map.set(se.client_id ?? se.step_id, se.status);
     }
     return map;
   }, [stepExecutions]);

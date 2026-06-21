@@ -73,6 +73,7 @@ export interface WorkflowListItem {
 export interface StepExecution {
   id: string;
   step_id: string;
+  client_id: string | null;
   status: string;
   input_data: Record<string, unknown> | null;
   output_data: Record<string, unknown> | null;

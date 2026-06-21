@@ -1,16 +1,17 @@
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
-
 # JWT 弱密钥黑名单（开发占位 / 常见示例字符串）
-_WEAK_JWT_SECRETS = frozenset({
-    "dev_jwt_secret_not_for_production",
-    "your_jwt_secret_change_in_production",
-    "replace_with_random_64_byte_hex_string",
-    "secret",
-    "changeme",
-    "change_me",
-})
+_WEAK_JWT_SECRETS = frozenset(
+    {
+        "dev_jwt_secret_not_for_production",
+        "your_jwt_secret_change_in_production",
+        "replace_with_random_64_byte_hex_string",
+        "secret",
+        "changeme",
+        "change_me",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -41,8 +42,9 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str = "http://localhost:3000"
 
     # 运行环境：development / staging / production。
-    # production 下禁用 dev-only 接口（如直接重置密码），避免安全风险。
-    APP_ENV: str = "development"
+    # 默认 production（fail-safe）：未显式配置时 dev-only 接口（如 /reset-password）一律不可用。
+    # 本地开发请在 .env 设置 APP_ENV=development。
+    APP_ENV: str = "production"
 
     # Search
     TAVILY_API_KEY: str = ""
@@ -70,7 +72,7 @@ class Settings(BaseSettings):
         if not v or len(v) < 32:
             raise ValueError(
                 "JWT_SECRET 必须至少 32 字符；"
-                "可用 `python -c \"import secrets;print(secrets.token_hex(48))\"` 生成"
+                '可用 `python -c "import secrets;print(secrets.token_hex(48))"` 生成'
             )
         if v in _WEAK_JWT_SECRETS:
             raise ValueError("JWT_SECRET 使用了已知的弱密钥占位符，请替换为强随机字符串")

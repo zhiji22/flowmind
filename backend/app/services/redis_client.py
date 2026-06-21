@@ -4,11 +4,13 @@
   1. 工作流执行时，把每个步骤的状态变更 publish 到频道
   2. WebSocket 端点 subscribe 频道，把事件实时推给前端
 """
+
 import asyncio
 import json
 import logging
 import uuid
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -151,9 +153,9 @@ class RedisLock:
     async def __aenter__(self) -> "RedisLock":
         try:
             client = await get_redis()
-            self._acquired = await client.set(
-                self.key, self._token, nx=True, ex=self.ttl
-            ) is not None
+            self._acquired = (
+                await client.set(self.key, self._token, nx=True, ex=self.ttl) is not None
+            )
         except Exception as e:
             # Redis 不可用时降级：放行（避免 Redis 抖动直接拖垮业务）。
             logger.warning(f"Redis 加锁失败 (key={self.key}): {e}")
@@ -170,4 +172,3 @@ class RedisLock:
             logger.warning(f"Redis 释放锁失败 (key={self.key}): {e}")
         finally:
             self._acquired = False
-        

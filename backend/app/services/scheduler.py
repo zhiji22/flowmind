@@ -1,5 +1,6 @@
 """调度管理工具：cron 表达式校验、下次运行时间计算、注册/暂停调度。"""
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 
 from croniter import croniter
 from sqlalchemy import select
@@ -20,7 +21,7 @@ def is_valid_cron(cron_expr: str) -> bool:
     if len(cron_expr.split()) != 5:
         return False
     try:
-        croniter(cron_expr, datetime.now(timezone.utc))
+        croniter(cron_expr, datetime.now(UTC))
         return True
     except Exception:
         return False
@@ -28,7 +29,7 @@ def is_valid_cron(cron_expr: str) -> bool:
 
 def compute_next_run(cron_expr: str, base: datetime | None = None) -> datetime:
     """根据 cron 表达式计算下一次运行时间（UTC）。"""
-    base = base or datetime.now(timezone.utc)
+    base = base or datetime.now(UTC)
     # base 为 tz-aware 时，croniter 返回的 datetime 也是 tz-aware
     return croniter(cron_expr, base).get_next(datetime)
 
@@ -40,9 +41,7 @@ async def upsert_schedule(
     enabled: bool = True,
 ) -> Schedule:
     """创建或更新工作流的调度（Schedule 与 Workflow 是 1:1）。"""
-    result = await db.execute(
-        select(Schedule).where(Schedule.workflow_id == workflow_id)
-    )
+    result = await db.execute(select(Schedule).where(Schedule.workflow_id == workflow_id))
     sched = result.scalar_one_or_none()
 
     next_run = compute_next_run(cron_expr) if enabled else None

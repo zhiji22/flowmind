@@ -7,10 +7,11 @@
 为避免 asyncpg 连接跨事件循环的坑，每个任务内用 asyncio.run() 起独立循环，
 并用 NullPool + 用后即 dispose 的一次性引擎。
 """
+
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from croniter import croniter
 from sqlalchemy import select
@@ -35,6 +36,7 @@ def _run_async(coro_factory):
     关键：引擎的创建与 dispose 必须在同一个事件循环里，否则 asyncpg
     连接会因绑定的 loop 已关闭而抛 "attached to a different loop"。
     """
+
     async def _runner():
         engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -49,6 +51,7 @@ def _run_async(coro_factory):
 # ---------------------------------------------------------------------------
 # 任务 1：执行工作流
 # ---------------------------------------------------------------------------
+
 
 async def _execute_workflow_async(session_factory, workflow_id: uuid.UUID) -> str:
     """创建执行记录并运行工作流，返回 execution_id。
@@ -79,9 +82,7 @@ async def _execute_workflow_async(session_factory, workflow_id: uuid.UUID) -> st
 def execute_workflow_task(self, workflow_id: str) -> str:
     """执行单个工作流（被调度器或手动触发）。"""
     try:
-        return _run_async(
-            lambda sf: _execute_workflow_async(sf, uuid.UUID(workflow_id))
-        )
+        return _run_async(lambda sf: _execute_workflow_async(sf, uuid.UUID(workflow_id)))
     except Exception:
         logger.exception("Celery 执行工作流失败: %s", workflow_id)
         raise
@@ -91,6 +92,7 @@ def execute_workflow_task(self, workflow_id: str) -> str:
 # 任务 2：调度心跳（每 30s 由 Beat 触发）
 # ---------------------------------------------------------------------------
 
+
 async def _tick_scheduler_async(session_factory) -> int:
     """扫描所有启用的、到期的调度，入队执行并更新下次运行时间。
 
@@ -98,13 +100,11 @@ async def _tick_scheduler_async(session_factory) -> int:
     若某次 tick 超过 30s，下一次 tick 会落到另一个并发槽同时跑，
     导致同一调度被重复入队。
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     triggered = 0
 
     async with session_factory() as db:
-        result = await db.execute(
-            select(Schedule).where(Schedule.enabled.is_(True))
-        )
+        result = await db.execute(select(Schedule).where(Schedule.enabled.is_(True)))
         schedules = result.scalars().all()
 
         for sched in schedules:
@@ -144,6 +144,7 @@ def tick_scheduler() -> int:
     TTL 取 beat 间隔（30s）的 2 倍：单个 tick 偶发慢一次（DB 抖动、调度
     批量到期）不应让下一次 beat 抢到锁并发跑，留出 30s 缓冲足够覆盖。
     """
+
     async def _with_lock(sf) -> int:
         async with RedisLock("scheduler_tick", ttl=60) as lock:
             if not lock.acquired:

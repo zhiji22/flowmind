@@ -18,7 +18,7 @@ _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 class EmailSendTool(BaseTool):
     name = "send_email"
     description = "发送电子邮件。当需要通知用户、发送报告或报警时使用。"
-    
+
     def get_parameters_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -71,5 +71,6 @@ class EmailSendTool(BaseTool):
         except Exception as e:
             logger.error("邮件发送失败: %s", e)
             raise RuntimeError("邮件发送失败，请检查邮件服务配置") from e
+
 
 registry.register(EmailSendTool())

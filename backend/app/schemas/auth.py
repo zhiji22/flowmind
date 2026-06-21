@@ -18,6 +18,7 @@ class LoginRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     """DEV 专用直接重置密码接口的请求体（生产环境禁用该接口）。"""
+
     email: EmailStr
     new_password: str = Field(min_length=8, max_length=128)
 

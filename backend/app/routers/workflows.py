@@ -1,4 +1,5 @@
 """工作流 API：创建、查询、编辑、删除 + 定时调度管理"""
+
 import uuid
 from typing import Any
 
@@ -10,20 +11,20 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.models.user import User
-from app.models.workflow import Workflow, Step, Schedule, WorkflowStatus
+from app.models.workflow import Schedule, Step, Workflow, WorkflowStatus
 from app.routers.auth import get_current_user
 from app.schemas.workflow import (
     CreateWorkflowRequest,
-    UpdateWorkflowRequest,
-    WorkflowResponse,
-    WorkflowListResponse,
     ScheduleRequest,
     ScheduleResponse,
     ScheduleToggleResponse,
+    UpdateWorkflowRequest,
+    WorkflowListResponse,
+    WorkflowResponse,
 )
 from app.services.llm_client import LLMError
-from app.services.scheduler import is_valid_cron, upsert_schedule, compute_next_run
-from app.services.workflow_engine import generate_workflow_from_message
+from app.services.scheduler import compute_next_run, is_valid_cron, upsert_schedule
+from app.services.workflow_engine import generate_workflow_from_message, validate_workflow_dag
 
 router = APIRouter()
 
@@ -75,9 +76,9 @@ async def create_workflow(
     try:
         workflow_data = await generate_workflow_from_message(req.message, current_user.email)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except LLMError as e:
-        raise HTTPException(status_code=503, detail=f"LLM 服务暂时不可用: {e}")
+        raise HTTPException(status_code=503, detail=f"LLM 服务暂时不可用: {e}") from e
 
     workflow = Workflow(
         user_id=current_user.id,
@@ -96,6 +97,9 @@ async def create_workflow(
         config["next"] = step_data.get("next", [])
         config["next_yes"] = step_data.get("next_yes", [])
         config["next_no"] = step_data.get("next_no", [])
+        # 保存 LLM 生成的原始步骤 id（如 "step_1"），作为图节点 id，
+        # 使其与 next/next_yes/next_no 里的引用一致（执行引擎 + 前端状态映射都依赖它）
+        config["_client_id"] = step_data.get("id")
 
         step = Step(
             workflow_id=workflow.id,
@@ -121,9 +125,7 @@ async def create_workflow(
     await db.commit()
     # 重新带 schedule 查一次，避免响应序列化时 lazy load 触发 MissingGreenlet
     refreshed = await db.execute(
-        select(Workflow)
-        .options(selectinload(Workflow.schedule))
-        .where(Workflow.id == workflow.id)
+        select(Workflow).options(selectinload(Workflow.schedule)).where(Workflow.id == workflow.id)
     )
     return refreshed.scalar_one()
 
@@ -228,6 +230,15 @@ async def update_workflow(
     if req.description is not None:
         workflow.description = req.description
     if req.dag_json is not None:
+        # 复用 create 的校验，防止编辑路径绕过 工具白名单 / 危险 key 检查
+        dag = req.dag_json
+        if isinstance(dag, list):
+            # 兼容旧的"纯 steps 列表"形态
+            dag = {"steps": dag}
+        try:
+            validate_workflow_dag(dag)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         workflow.dag_json = req.dag_json
         # 同步 Schedule：DAG 是调度的真相源之一，避免二者脱节
         new_cron = _extract_trigger_cron(req.dag_json)
@@ -248,9 +259,7 @@ async def update_workflow(
     await db.commit()
     # 重新带 schedule 查一次，避免响应序列化时 lazy load 触发 MissingGreenlet
     refreshed = await db.execute(
-        select(Workflow)
-        .options(selectinload(Workflow.schedule))
-        .where(Workflow.id == workflow.id)
+        select(Workflow).options(selectinload(Workflow.schedule)).where(Workflow.id == workflow.id)
     )
     return refreshed.scalar_one()
 
@@ -272,6 +281,7 @@ async def delete_workflow(
 # 定时调度管理
 # ---------------------------------------------------------------------------
 
+
 @router.post("/{workflow_id}/schedule", response_model=ScheduleResponse)
 async def set_schedule(
     workflow_id: uuid.UUID,
@@ -288,7 +298,9 @@ async def set_schedule(
     workflow = await _load_user_workflow(workflow_id, current_user.id, db)
 
     if not is_valid_cron(req.cron_expr):
-        raise HTTPException(status_code=400, detail="无效的 cron 表达式（应为 5 段：分 时 日 月 周）")
+        raise HTTPException(
+            status_code=400, detail="无效的 cron 表达式（应为 5 段：分 时 日 月 周）"
+        )
 
     sched = await upsert_schedule(db, workflow.id, req.cron_expr, enabled=True)
     workflow.status = WorkflowStatus.ACTIVE
@@ -312,9 +324,7 @@ async def toggle_schedule(
     """暂停/恢复定时调度，并同步工作流状态（active ↔ paused）。"""
     workflow = await _load_user_workflow(workflow_id, current_user.id, db)
 
-    result = await db.execute(
-        select(Schedule).where(Schedule.workflow_id == workflow.id)
-    )
+    result = await db.execute(select(Schedule).where(Schedule.workflow_id == workflow.id))
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=400, detail="该工作流未配置定时调度")

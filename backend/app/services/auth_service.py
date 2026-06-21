@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 from jose import jwt
@@ -34,7 +34,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user_id),
         "jti": uuid.uuid4().hex,  # token 唯一 id，用于黑名单
@@ -43,10 +43,10 @@ def create_access_token(user_id: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def decode_access_token(token: str) -> TokenClaims | None:
+async def decode_access_token(token: str) -> TokenClaims | None:
     """解析并校验 token；返回完整 claims 或 None。
 
-    检查：签名 / 过期 / 黑名单。
+    检查：签名 / 过期 / 黑名单（Redis，异步）。
     """
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
@@ -59,7 +59,7 @@ def decode_access_token(token: str) -> TokenClaims | None:
     if not sub or not jti or not exp:
         return None
 
-    if is_revoked(jti):
+    if await is_revoked(jti):
         return None
 
     return TokenClaims(sub=sub, jti=jti, exp=int(exp))

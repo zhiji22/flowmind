@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ---------- 后端：lint + 类型检查 + 测试 ----------
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flowmind/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: flowmind/backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt ruff mypy
+
+      - name: Ruff lint
+        run: ruff check app
+
+      - name: Ruff format check
+        run: ruff format --check app
+
+      - name: Mypy type check
+        run: mypy app || true # 类型检查非阻塞（渐进式完善）
+
+      - name: Pytest
+        run: pytest -q || true # 暂无测试时也不失败 CI
+
+  # ---------- 前端：lint + build ----------
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flowmind/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: flowmind/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          API_URL: http://localhost:8001

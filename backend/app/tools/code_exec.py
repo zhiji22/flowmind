@@ -9,6 +9,7 @@
 这样无需引入 RestrictedPython 依赖，也从根本上杜绝危险操作。
 适合数值计算、字符串处理、数据转换。
 """
+
 import ast
 import logging
 import operator
@@ -17,6 +18,7 @@ from typing import Any
 from app.tools.base import BaseTool, registry
 
 logger = logging.getLogger(__name__)
+
 
 class _SandboxError(Exception):
     """沙箱校验异常。"""
@@ -58,6 +60,7 @@ _CONTAINMENT_OPS = {
     ast.In: lambda a, b: a in b,
     ast.NotIn: lambda a, b: a not in b,
 }
+
 
 def _safe_range(*args):
     """带长度上限的 range，避免 range(10**12) 之类构造大对象。"""
@@ -140,11 +143,11 @@ class SafeEvaluator(ast.NodeVisitor):
 
     def visit_Expr(self, node: ast.Expr) -> Any:
         return self.visit(node.value)
-    
+
     # ----- 表达式 -----
     def visit_Constant(self, node: ast.Constant) -> Any:
         return node.value
-    
+
     def visit_Name(self, node: ast.Name) -> Any:
         if node.id in _SAFE_BUILTINS:
             return _SAFE_BUILTINS[node.id]
@@ -159,7 +162,7 @@ class SafeEvaluator(ast.NodeVisitor):
         if isinstance(node.op, ast.Pow):
             if isinstance(right, (int, float)) and right > _MAX_POW_EXPONENT:
                 raise _SandboxError(f"指数过大（>{_MAX_POW_EXPONENT}）")
-            return left ** right
+            return left**right
         op = _SAFE_BINOPS.get(type(node.op))
         if op is None:
             raise _SandboxError(f"不支持的运算符: {type(node.op).__name__}")
@@ -191,7 +194,7 @@ class SafeEvaluator(ast.NodeVisitor):
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         left = self.visit(node.left)
-        for op_node, comparator in zip(node.ops, node.comparators):
+        for op_node, comparator in zip(node.ops, node.comparators, strict=False):
             right = self.visit(comparator)
             containment = _CONTAINMENT_OPS.get(type(op_node))
             if containment is not None:
@@ -199,9 +202,7 @@ class SafeEvaluator(ast.NodeVisitor):
             else:
                 op = _SAFE_CMPOPS.get(type(op_node))
                 if op is None:
-                    raise _SandboxError(
-                        f"不支持的比较运算符: {type(op_node).__name__}"
-                    )
+                    raise _SandboxError(f"不支持的比较运算符: {type(op_node).__name__}")
                 ok = op(left, right)
             if not ok:
                 return False
@@ -230,10 +231,7 @@ class SafeEvaluator(ast.NodeVisitor):
         return tuple(self.visit(e) for e in node.elts)
 
     def visit_Dict(self, node: ast.Dict) -> Any:
-        return {
-            self.visit(k): self.visit(v)
-            for k, v in zip(node.keys, node.values)
-        }
+        return {self.visit(k): self.visit(v) for k, v in zip(node.keys, node.values, strict=False)}
 
     def visit_Subscript(self, node: ast.Subscript) -> Any:
         value = self.visit(node.value)
@@ -269,12 +267,10 @@ def _safe_eval(code: str, env: dict[str, Any] | None = None) -> Any:
 
     depth = _ast_depth(tree)
     if depth > _MAX_AST_DEPTH:
-        raise _SandboxError(
-            f"AST 嵌套深度 {depth} 超过上限 {_MAX_AST_DEPTH}（疑似 DoS）"
-        )
+        raise _SandboxError(f"AST 嵌套深度 {depth} 超过上限 {_MAX_AST_DEPTH}（疑似 DoS）")
 
     return SafeEvaluator(env or {}).run(tree)
-    
+
 
 class CodeExecTool(BaseTool):
     name = "code_exec"

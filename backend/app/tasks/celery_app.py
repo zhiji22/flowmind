@@ -1,12 +1,13 @@
 """Celery 应用：异步任务队列 + 定时调度。
 
-  - broker / backend 都用 Redis
-  - Beat 每 30s 触发一次调度心跳（tick_scheduler）
-  - 任务在 worker 进程中执行（与 api 进程隔离）
+- broker / backend 都用 Redis
+- Beat 每 30s 触发一次调度心跳（tick_scheduler）
+- 任务在 worker 进程中执行（与 api 进程隔离）
 """
-from app.config import settings
-from celery import Celery # pyright: ignore[reportMissingImports]
 
+from celery import Celery  # pyright: ignore[reportMissingImports]
+
+from app.config import settings
 
 # include 确保任务模块被导入、任务名被注册
 celery_app = Celery(

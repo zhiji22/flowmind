@@ -47,7 +47,7 @@ async def _search_duckduckgo(query: str) -> str:
             for r in results:
                 formatted.append(f"- {r['title']}\n  {r['body']}\n  链接: {r['href']}")
             return "\n\n".join(formatted)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return f"搜索 '{query}' 超时，请稍后重试。"
         except Exception as e:
             if "Ratelimit" in str(e) and attempt < MAX_RETRIES - 1:

@@ -17,7 +17,7 @@ class BaseTool(ABC):
         """
         执行工具，返回结果字符串
         """
-    
+
     def to_openai_tool(self) -> dict[str, Any]:
         """转换为OpenAI function calling格式"""
 
@@ -40,12 +40,12 @@ class ToolRegistry:
 
     def get(self, name: str) -> BaseTool | None:
         return self._tools.get(name)
-    
+
     def get_all_schemas(self) -> list[dict[str, Any]]:
         return [tool.to_openai_tool() for tool in self._tools.values()]
-    
+
     def list_names(self) -> list[str]:
         return list(self._tools.keys())
-    
+
 
 registry = ToolRegistry()

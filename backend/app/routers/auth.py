@@ -1,23 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.limiter import limiter
 from app.models.user import User
 from app.schemas.auth import (
-    RegisterRequest,
     LoginRequest,
+    RegisterRequest,
     ResetPasswordRequest,
     TokenResponse,
     UserResponse,
 )
 from app.services.auth_service import (
-    hash_password,
-    verify_password,
     create_access_token,
     decode_access_token,
+    hash_password,
+    verify_password,
 )
 from app.services.token_blacklist import revoke
 
@@ -30,7 +31,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    claims = decode_access_token(credentials.credentials)
+    claims = await decode_access_token(credentials.credentials)
     if not claims:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -47,7 +48,8 @@ async def get_current_user(
 
 # 注册
 @router.post("/register", response_model=TokenResponse)
-async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/hour")
+async def register(request: Request, req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == req.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="该邮箱已注册")
@@ -66,7 +68,8 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 # 登录
 @router.post("/login", response_model=TokenResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(request: Request, req: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(req.password, user.password_hash):
@@ -78,7 +81,10 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 # DEV 专用：直接重置已存在用户的密码（生产环境禁用）
 @router.post("/reset-password")
-async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/hour")
+async def reset_password(
+    request: Request, req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)
+):
     # Fail-closed：仅 development/test 环境启用；任何其他值（含 production、
     # staging、未设置、拼写错误、大小写变体）一律 404，避免误开放账号接管接口。
     if settings.APP_ENV not in ("development", "test"):
@@ -99,9 +105,9 @@ async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(g
 async def logout(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    claims = decode_access_token(credentials.credentials)
+    claims = await decode_access_token(credentials.credentials)
     if claims:
-        revoke(claims["jti"], float(claims["exp"]))
+        await revoke(claims["jti"], float(claims["exp"]))
     return {"message": "已登出"}
 
 

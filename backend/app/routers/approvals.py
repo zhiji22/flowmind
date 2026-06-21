@@ -3,14 +3,15 @@
 通过审批后会把对应 StepExecution 标记为 SUCCESS（或拒绝时 FAILED），
 然后再次调用执行引擎从挂起处继续工作流。
 """
-import uuid
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+import uuid
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import async_session, get_db
+from app.database import get_db
 from app.models.execution import (
     ApprovalRequest,
     ApprovalStatus,
@@ -20,10 +21,10 @@ from app.models.execution import (
     StepExecutionStatus,
 )
 from app.models.user import User
-from app.models.workflow import Workflow, Step
+from app.models.workflow import Step, Workflow
 from app.routers.auth import get_current_user
 from app.schemas.approval import ApprovalRequestResponse, ApprovalResolveRequest
-from app.services.execution_engine import execute_workflow
+from app.tasks.workflow_tasks import execute_workflow_task
 
 router = APIRouter()
 
@@ -83,9 +84,7 @@ async def _enrich_one(approval: ApprovalRequest, db: AsyncSession) -> dict:
     return _to_dict(approval, workflow, step)
 
 
-async def _enrich_many(
-    approvals: list[ApprovalRequest], db: AsyncSession
-) -> list[dict]:
+async def _enrich_many(approvals: list[ApprovalRequest], db: AsyncSession) -> list[dict]:
     """批量附加上下文：一次性取出涉及的 Execution/Workflow/Step，避免 N+1 查询。"""
     if not approvals:
         return []
@@ -102,9 +101,7 @@ async def _enrich_many(
     workflow_by_exec: dict = {eid: wf for eid, wf in exec_rows.all()}
 
     # 一次性拉所有相关的 step
-    step_rows = await db.execute(
-        select(Step).where(Step.id.in_(step_ids))
-    )
+    step_rows = await db.execute(select(Step).where(Step.id.in_(step_ids)))
     step_by_id: dict = {s.id: s for s in step_rows.scalars().all()}
 
     return [
@@ -137,28 +134,21 @@ async def list_pending_approvals(
     return await _enrich_many(approvals, db)
 
 
-async def _resume_execution_in_background(execution_id: uuid.UUID) -> None:
-    """开新 session 调用执行引擎；避免与 HTTP request session 互相干扰。"""
-    async with async_session() as db:
-        await execute_workflow(execution_id, db)
-
-
 @router.post("/{approval_id}/approve", response_model=ApprovalRequestResponse)
 async def approve(
     approval_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     body: ApprovalResolveRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """通过审批：将 step 标记为已通过，并在后台恢复工作流执行。"""
+    """通过审批：将 step 标记为已通过，并通过 Celery 恢复工作流执行。"""
     approval = await _load_user_approval(approval_id, current_user.id, db)
 
     if approval.status != ApprovalStatus.PENDING:
         raise HTTPException(status_code=400, detail="该审批已被处理")
 
     # 标记审批通过
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     approval.status = ApprovalStatus.APPROVED
     approval.resolved_at = now
     approval.resolver_id = current_user.id
@@ -182,9 +172,7 @@ async def approve(
         se.finished_at = now
 
     # 把 execution 重新置为 RUNNING，由后台任务推进
-    exe_result = await db.execute(
-        select(Execution).where(Execution.id == approval.execution_id)
-    )
+    exe_result = await db.execute(select(Execution).where(Execution.id == approval.execution_id))
     execution = exe_result.scalar_one_or_none()
     if execution is not None and execution.status == ExecutionStatus.WAITING_FOR_APPROVAL:
         execution.status = ExecutionStatus.RUNNING
@@ -193,8 +181,8 @@ async def approve(
     await db.commit()
     await db.refresh(approval)
 
-    # 后台恢复执行
-    background_tasks.add_task(_resume_execution_in_background, approval.execution_id)
+    # 通过 Celery 恢复执行（durable）
+    execute_workflow_task.delay(str(approval.execution_id))
 
     return await _enrich_one(approval, db)
 
@@ -212,7 +200,7 @@ async def reject(
     if approval.status != ApprovalStatus.PENDING:
         raise HTTPException(status_code=400, detail="该审批已被处理")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     approval.status = ApprovalStatus.REJECTED
     approval.resolved_at = now
     approval.resolver_id = current_user.id
@@ -230,9 +218,7 @@ async def reject(
         se.error_message = note
         se.finished_at = now
 
-    exe_result = await db.execute(
-        select(Execution).where(Execution.id == approval.execution_id)
-    )
+    exe_result = await db.execute(select(Execution).where(Execution.id == approval.execution_id))
     execution = exe_result.scalar_one_or_none()
     if execution is not None:
         execution.status = ExecutionStatus.FAILED

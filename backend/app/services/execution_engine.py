@@ -12,16 +12,17 @@
   4. 更新 Execution 和 StepExecution 的状态
   5. 支持失败重试：失败的步骤可以重新执行
 """
+
 import logging
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.execution import Execution, StepExecution, ExecutionStatus, StepExecutionStatus
+from app.models.execution import Execution, ExecutionStatus, StepExecution, StepExecutionStatus
 from app.models.workflow import Step
 from app.tools.base import registry
 
@@ -43,8 +44,10 @@ MSG_TOOL_NOT_FOUND = "工具不存在"
 # TypedDict 类型定义
 # ---------------------------------------------------------------------------
 
+
 class StepConfigDict(TypedDict, total=False):
     """步骤配置字典类型"""
+
     next: list[str]
     next_yes: list[str]
     next_no: list[str]
@@ -55,6 +58,7 @@ class StepConfigDict(TypedDict, total=False):
 
 class StepDict(TypedDict, total=False):
     """步骤字典类型"""
+
     id: str
     step_type: str
     tool_name: str | None
@@ -67,6 +71,7 @@ class StepDict(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 # 拓扑排序
 # ---------------------------------------------------------------------------
+
 
 def _topological_sort(steps: list[StepDict]) -> list[StepDict]:
     """
@@ -106,36 +111,48 @@ def _topological_sort(steps: list[StepDict]) -> list[StepDict]:
 # 辅助：解析已完成的步骤输出
 # ---------------------------------------------------------------------------
 
-def _resolve_step_outputs(step_executions: list[StepExecution]) -> dict[str, Any]:
+
+def _resolve_step_outputs(step_exec_map: dict[str, StepExecution]) -> dict[str, Any]:
     """
-    将已完成的步骤执行结果整理为 { step_id: output_data } 的字典，
+    将已完成的步骤执行结果整理为 { client_id: output_data } 的字典，
     供后续步骤引用前一步的结果（如条件判断）。
+
+    key 用 client_id（与 condition_field 里的 $step_2 引用一致）。
     """
-    outputs = {}
-    for se in step_executions:
-        if se.status == StepExecutionStatus.SUCCESS and se.output_data:
-            outputs[str(se.step_id)] = se.output_data
-    return outputs
+    return {
+        cid: se.output_data
+        for cid, se in step_exec_map.items()
+        if se.status == StepExecutionStatus.SUCCESS and se.output_data
+    }
 
 
 # ---------------------------------------------------------------------------
 # 从 DB Step 记录构建 DAG 字典列表
 # ---------------------------------------------------------------------------
 
+
 def _build_dag_steps(db_steps: list[Step]) -> list[dict]:
-    """把数据库中的 Step 记录转为 DAG JSON 格式。"""
+    """把数据库中的 Step 记录转为 DAG JSON 格式。
+
+    关键：图节点 id 用 config._client_id（LLM 生成的 "step_1" 等），
+    这样与 next/next_yes/next_no 里的引用一致，拓扑排序和条件分支才能正确匹配。
+    db_id 是数据库 UUID，仅供 StepExecution 外键使用。
+    """
     dag_steps = []
     for s in db_steps:
         config = s.config or {}
-        dag_steps.append({
-            "id": str(s.id),
-            "step_type": s.step_type,
-            "tool_name": s.tool_name,
-            "config": config,
-            "next": config.get("next", []),
-            "next_yes": config.get("next_yes", []),
-            "next_no": config.get("next_no", []),
-        })
+        dag_steps.append(
+            {
+                "id": config.get("_client_id") or str(s.id),
+                "db_id": str(s.id),
+                "step_type": s.step_type,
+                "tool_name": s.tool_name,
+                "config": config,
+                "next": config.get("next", []),
+                "next_yes": config.get("next_yes", []),
+                "next_no": config.get("next_no", []),
+            }
+        )
     return dag_steps
 
 
@@ -143,11 +160,12 @@ def _build_dag_steps(db_steps: list[Step]) -> list[dict]:
 # 单步执行：trigger
 # ---------------------------------------------------------------------------
 
+
 async def _execute_trigger_step(
     se: StepExecution,
 ) -> None:
     """trigger 类型仅作为入口标记，直接记录成功。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     se.status = StepExecutionStatus.SUCCESS
     se.started_at = now
     se.finished_at = now
@@ -157,6 +175,7 @@ async def _execute_trigger_step(
 # ---------------------------------------------------------------------------
 # 单步执行：tool
 # ---------------------------------------------------------------------------
+
 
 async def _execute_tool_step(
     step: dict,
@@ -170,7 +189,7 @@ async def _execute_tool_step(
         True 表示应继续执行后续步骤，False 表示应终止工作流。
     """
     se.status = StepExecutionStatus.RUNNING
-    se.started_at = datetime.now(timezone.utc)
+    se.started_at = datetime.now(UTC)
     await db.commit()
 
     tool_name = step.get("tool_name", "")
@@ -180,7 +199,7 @@ async def _execute_tool_step(
     if not tool:
         se.status = StepExecutionStatus.FAILED
         se.error_message = f"{MSG_TOOL_NOT_FOUND}: '{tool_name}'"
-        se.finished_at = datetime.now(timezone.utc)
+        se.finished_at = datetime.now(UTC)
         await db.commit()
         return False
 
@@ -194,11 +213,11 @@ async def _execute_tool_step(
     except Exception as e:
         se.status = StepExecutionStatus.FAILED
         se.error_message = str(e)
-        se.finished_at = datetime.now(timezone.utc)
+        se.finished_at = datetime.now(UTC)
         await db.commit()
         return False
 
-    se.finished_at = datetime.now(timezone.utc)
+    se.finished_at = datetime.now(UTC)
     await db.commit()
     return True
 
@@ -206,6 +225,7 @@ async def _execute_tool_step(
 # ---------------------------------------------------------------------------
 # 单步执行：condition
 # ---------------------------------------------------------------------------
+
 
 async def _execute_condition_step(
     step: dict,
@@ -216,7 +236,7 @@ async def _execute_condition_step(
 ) -> None:
     """根据前一步输出结果判断走哪个分支。"""
     se.status = StepExecutionStatus.RUNNING
-    se.started_at = datetime.now(timezone.utc)
+    se.started_at = datetime.now(UTC)
     await db.commit()
 
     config = step.get("config", {})
@@ -224,9 +244,8 @@ async def _execute_condition_step(
     operator = config.get("operator", "contains")
     expected = config.get("value", "")
 
-    # 获取前一步的输出结果
-    all_se = list(step_exec_map.values())
-    outputs = _resolve_step_outputs(all_se)
+    # 获取前一步的输出结果（key 为 client_id）
+    outputs = _resolve_step_outputs(step_exec_map)
     actual_value = ""
 
     if condition_field.startswith("$"):
@@ -254,7 +273,7 @@ async def _execute_condition_step(
         "actual_value": actual_value,
         "expected_value": expected,
     }
-    se.finished_at = datetime.now(timezone.utc)
+    se.finished_at = datetime.now(UTC)
     await db.commit()
 
     # 跳过不满足条件的分支（包括传递性后继）
@@ -284,6 +303,7 @@ async def _execute_condition_step(
 # 单步执行：approval
 # ---------------------------------------------------------------------------
 
+
 async def _execute_approval_step(
     step: dict,
     se: StepExecution,
@@ -294,11 +314,11 @@ async def _execute_approval_step(
     from app.models.execution import ApprovalRequest, ApprovalStatus
 
     se.status = StepExecutionStatus.RUNNING
-    se.started_at = datetime.now(timezone.utc)
+    se.started_at = datetime.now(UTC)
     await db.commit()
 
     # 幂等：避免同一 (execution, step) 反复 create
-    step_uuid = uuid.UUID(step["id"])
+    step_uuid = uuid.UUID(step["db_id"])
     existing = await db.execute(
         select(ApprovalRequest).where(
             ApprovalRequest.execution_id == execution.id,
@@ -325,6 +345,7 @@ async def _execute_approval_step(
 # 主入口：执行工作流
 # ---------------------------------------------------------------------------
 
+
 async def execute_workflow(
     execution_id: uuid.UUID,
     db: AsyncSession,
@@ -337,6 +358,12 @@ async def execute_workflow(
         db: 数据库会话
     """
     try:
+        # 0. 串行化：同一 execution 的并发执行（手动触发/重试/审批恢复/调度）排队执行，
+        #    避免重复执行导致的外部副作用（重复发邮件等）。session 级锁，显式释放。
+        await db.execute(
+            text("SELECT pg_advisory_lock(hashtext(:eid))"), {"eid": str(execution_id)}
+        )
+
         # 1. 加载执行记录
         result = await db.execute(select(Execution).where(Execution.id == execution_id))
         execution = result.scalar_one_or_none()
@@ -355,14 +382,14 @@ async def execute_workflow(
             sorted_ids = {s["id"] for s in sorted_steps}
             cycle_ids = [s["id"] for s in dag_steps if s["id"] not in sorted_ids]
             execution.status = ExecutionStatus.FAILED
-            execution.finished_at = datetime.now(timezone.utc)
+            execution.finished_at = datetime.now(UTC)
             execution.result = {"error": MSG_WORKFLOW_CYCLE, "cycle_steps": cycle_ids}
             await db.commit()
             return
 
         # 3. 初始化执行状态
         execution.status = ExecutionStatus.RUNNING
-        execution.started_at = datetime.now(timezone.utc)
+        execution.started_at = datetime.now(UTC)
 
         step_exec_map: dict[str, StepExecution] = {}
         for step in sorted_steps:
@@ -370,7 +397,7 @@ async def execute_workflow(
             existing_result = await db.execute(
                 select(StepExecution).where(
                     StepExecution.execution_id == execution.id,
-                    StepExecution.step_id == uuid.UUID(step["id"]),
+                    StepExecution.step_id == uuid.UUID(step["db_id"]),
                 )
             )
             existing_se = existing_result.scalar_one_or_none()
@@ -380,7 +407,7 @@ async def execute_workflow(
             else:
                 se = StepExecution(
                     execution_id=execution.id,
-                    step_id=uuid.UUID(step["id"]),
+                    step_id=uuid.UUID(step["db_id"]),
                     status=StepExecutionStatus.PENDING,
                 )
                 db.add(se)
@@ -413,7 +440,7 @@ async def execute_workflow(
                 should_continue = await _execute_tool_step(step, se, db)
                 if not should_continue:
                     execution.status = ExecutionStatus.FAILED
-                    execution.finished_at = datetime.now(timezone.utc)
+                    execution.finished_at = datetime.now(UTC)
                     execution.result = {"error": f"{MSG_STEP_FAILED}: {step['id']}"}
                     await db.commit()
                     return
@@ -425,9 +452,12 @@ async def execute_workflow(
 
             if step_type == "approval":
                 # 已通过审批的 step 标记为 SUCCESS 后继续；否则暂停等待审批
-                if se.status == StepExecutionStatus.RUNNING and (se.output_data or {}).get("approved") is True:
+                if (
+                    se.status == StepExecutionStatus.RUNNING
+                    and (se.output_data or {}).get("approved") is True
+                ):
                     se.status = StepExecutionStatus.SUCCESS
-                    se.finished_at = datetime.now(timezone.utc)
+                    se.finished_at = datetime.now(UTC)
                     await db.commit()
                     continue
                 await _execute_approval_step(step, se, execution, db)
@@ -435,7 +465,7 @@ async def execute_workflow(
 
         # 5. 全部完成
         execution.status = ExecutionStatus.SUCCESS
-        execution.finished_at = datetime.now(timezone.utc)
+        execution.finished_at = datetime.now(UTC)
         execution.result = {"message": MSG_WORKFLOW_COMPLETE}
         await db.commit()
 
@@ -447,8 +477,16 @@ async def execute_workflow(
             execution = result.scalar_one_or_none()
             if execution:
                 execution.status = ExecutionStatus.FAILED
-                execution.finished_at = datetime.now(timezone.utc)
+                execution.finished_at = datetime.now(UTC)
                 execution.result = {"error": str(e)}
                 await db.commit()
         except Exception as inner_e:
             logger.exception(f"更新执行状态失败: {inner_e}")
+    finally:
+        # 释放 advisory lock（无论成功/失败/暂停都应释放，避免阻塞后续执行）
+        try:
+            await db.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:eid))"), {"eid": str(execution_id)}
+            )
+        except Exception as unlock_err:
+            logger.debug("释放 advisory lock 失败: %s", unlock_err)

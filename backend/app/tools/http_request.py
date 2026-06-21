@@ -6,6 +6,7 @@
   3. 请求超时 + 响应体大小上限（防拉取超大响应）
   4. 手动跟随重定向，每跳都重新做 SSRF 校验（防 302 绕过）
 """
+
 import asyncio
 import ipaddress
 import logging
@@ -81,9 +82,7 @@ async def _assert_safe_url(url: str) -> None:
     # 域名解析为 IP，逐个检查，防止 DNS 解析到内网
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.run_in_executor(
-            None, lambda: socket.getaddrinfo(hostname, None)
-        )
+        infos = await loop.run_in_executor(None, lambda: socket.getaddrinfo(hostname, None))
     except socket.gaierror as e:
         raise ValueError(f"无法解析域名 {hostname}: {e}") from e
 
@@ -149,9 +148,7 @@ class HttpRequestTool(BaseTool):
                     try:
                         await _assert_safe_url(current_url)
                     except ValueError as e:
-                        logger.warning(
-                            "HTTP 请求被 SSRF 防护拦截 (hop=%d): %s", hop, e
-                        )
+                        logger.warning("HTTP 请求被 SSRF 防护拦截 (hop=%d): %s", hop, e)
                         return f"请求被拒绝: {e}"
 
                     response = await client.request(
