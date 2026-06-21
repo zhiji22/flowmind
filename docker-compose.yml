@@ -35,6 +35,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
+    # 本地开发用 reload；生产 Dockerfile 默认是多 worker
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8001:8000"
     env_file:
@@ -53,6 +56,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+
+    # 本地开发用 dev server
+    command: npm run dev
+
     ports:
       - "3000:3000"
     environment:
@@ -64,6 +71,42 @@ services:
       - /app/node_modules
     networks:
       - flowmind-net
+  
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # 运行 Celery worker（消费任务队列）
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - flowmind-net
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # 运行 Celery Beat 调度器（定时派发任务）
+    command: celery -A app.tasks.celery_app.celery_app beat --loglevel=info
+    env_file:
+      - backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - flowmind-net
+
 
 volumes:
   postgres_data:

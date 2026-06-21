@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { authApi, workflowApi, executionApi, AuthenticationError } from "@/lib/api";
+import { authApi, workflowApi, executionApi, AuthenticationError, scheduleApi } from "@/lib/api";
 import { getToken, removeToken } from "@/lib/auth";
-import { withToast } from "@/lib/toast";
+import { withToast, showError } from "@/lib/toast";
 import type { WorkflowListItem } from "@/types";
 
 export default function DashboardPage() {
@@ -80,6 +80,35 @@ export default function DashboardPage() {
     }
   }
 
+  /** 暂停/恢复定时调度 */
+  async function handleToggleSchedule(id: string) {
+    setOperatingId(id);
+    try {
+      const result = await scheduleApi.toggle(id);
+      // 局部更新对应卡片
+      setWorkflows((prev) =>
+        prev.map((w) =>
+          w.id === id
+            ? {
+                ...w,
+                schedule_enabled: result.enabled,
+                next_run: result.next_run,
+                status: result.workflow_status,
+              }
+            : w
+        )
+      );
+    } catch (err) {
+      if (err instanceof AuthenticationError) {
+        router.replace("/login");
+        return;
+      }
+      showError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setOperatingId(null);
+    }
+  }
+
   /** 退出登录：先通知后端将 token 加入黑名单，再清除本地状态 */
   async function handleLogout() {
     try {
@@ -109,6 +138,12 @@ export default function DashboardPage() {
             FlowMind
           </h1>
           <div className="flex items-center gap-4">
+            <button
+              onClick={() => router.push("/approvals")}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+            >
+              审批
+            </button>
             <button
               onClick={() => router.push("/chat")}
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
@@ -168,9 +203,37 @@ export default function DashboardPage() {
                 {workflow.description || "暂无描述"}
               </p>
 
-              <p className="mb-4 text-xs text-gray-400">
+              <p className="mb-3 text-xs text-gray-400">
                 创建于 {new Date(workflow.created_at).toLocaleString("zh-CN")}
               </p>
+
+              {/* 定时调度状态 */}
+              {workflow.cron_expr && (
+                <div className="mb-3 flex items-center justify-between rounded-lg bg-gray-50 px-3 py-1.5">
+                  <span className="truncate font-mono text-xs text-gray-500">
+                    ⏰ {workflow.cron_expr}
+                    {workflow.next_run && (
+                      <span className="ml-1 text-gray-400">
+                        · 下次 {new Date(workflow.next_run).toLocaleString("zh-CN")}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleSchedule(workflow.id);
+                    }}
+                    disabled={operatingId === workflow.id}
+                    className={`rounded px-2 py-0.5 text-xs font-medium disabled:opacity-50 ${
+                      workflow.schedule_enabled === true
+                        ? "bg-green-100 text-green-700"
+                        : "bg-gray-200 text-gray-500"
+                    }`}
+                  >
+                    {workflow.schedule_enabled === true ? "运行中" : "已暂停"}
+                  </button>
+                </div>
+              )}
 
               {/* 操作按钮 */}
               <div

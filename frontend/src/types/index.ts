@@ -62,6 +62,10 @@ export interface WorkflowListItem {
   description: string | null;
   status: string;
   created_at: string;
+  // 调度信息
+  cron_expr: string | null;
+  schedule_enabled: boolean | null;
+  next_run: string | null;
 }
 
 // ===== 执行相关类型 =====
@@ -69,6 +73,7 @@ export interface WorkflowListItem {
 export interface StepExecution {
   id: string;
   step_id: string;
+  client_id: string | null;
   status: string;
   input_data: Record<string, unknown> | null;
   output_data: Record<string, unknown> | null;

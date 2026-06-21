@@ -12,6 +12,10 @@ venv/
 env/
 .Python
 
+# Celery Beat 本地调度文件（每次运行会生成，无需入库）
+celerybeat-schedule
+celerybeat-schedule.*
+
 # Node
 node_modules/
 .next/

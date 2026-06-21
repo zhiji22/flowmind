@@ -1,0 +1,33 @@
+# ruff：lint + format（替代 black + isort + flake8）
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort（import 排序）
+  "B",   # flake8-bugbear（常见 bug）
+  "UP",  # pyupgrade
+]
+ignore = [
+  "E501",   # 行长由 formatter 管
+  "B008",   # 函数默认参数中调用函数：FastAPI 的 Depends() 是必须的写法，误报
+  "UP042",  # str+Enum → StrEnum：保持现状，避免改动枚举的运行时行为
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# mypy：静态类型检查
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+exclude = ["alembic/"]

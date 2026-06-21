@@ -1,10 +1,10 @@
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from app.config import settings
 from app.services.llm_client import chat_completion
 from app.tools.base import registry
-
 
 SYSTEM_PROMPT = """你是 FlowMind 的 AI 助手。你可以使用工具来帮助用户完成任务。
 
@@ -17,6 +17,7 @@ SYSTEM_PROMPT = """你是 FlowMind 的 AI 助手。你可以使用工具来帮�
 每次你都会收到之前所有步骤的上下文，请基于完整上下文来决策。
 当所有步骤完成，给出最终结论时，请在回答开头加上 [FINAL]。
 """
+
 
 async def run_agent(user_message: str) -> dict[str, Any]:
     """
@@ -31,8 +32,8 @@ async def run_agent(user_message: str) -> dict[str, Any]:
         }
     """
     messages = [
-        { "role": "system", "content": SYSTEM_PROMPT },
-        { "role": "user", "content": user_message },
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
     ]
 
     # 获取所有tool
@@ -46,7 +47,7 @@ async def run_agent(user_message: str) -> dict[str, Any]:
         iterations += 1
 
         response = await chat_completion(messages, tools=tools if tools else None)
-        choice  = response.choices[0]
+        choice = response.choices[0]
 
         # 没有工具了 直接回答
         if not choice.message.tool_calls:
@@ -57,7 +58,7 @@ async def run_agent(user_message: str) -> dict[str, Any]:
                 "tool_calls": tool_calls_log,
                 "iterations": iterations,
             }
-        
+
         # 大模型的回答 tool调用 加入消息历史
         messages.append(choice.message.model_dump())
 
@@ -76,35 +77,42 @@ async def run_agent(user_message: str) -> dict[str, Any]:
                 result = f"错误：工具 '{tool_name}' 不存在"
             else:
                 result = await tool.execute(**tool_args)
-            
-            # 记录工具调用日志
-            tool_calls_log.append({
-                "name": tool_name,
-                "arguments": tool_args,
-                "result": result[0:500], #防止结果太长
-            })
 
-            thoughts.append({
-                "step": iterations,
-                "thought": f"使用工具 {tool_name}",
-                "action": f"{tool_name}({json.dumps(tool_args, ensure_ascii=False)})",
-                "observation": result[:500],
-            })
+            # 记录工具调用日志
+            tool_calls_log.append(
+                {
+                    "name": tool_name,
+                    "arguments": tool_args,
+                    "result": result[0:500],  # 防止结果太长
+                }
+            )
+
+            thoughts.append(
+                {
+                    "step": iterations,
+                    "thought": f"使用工具 {tool_name}",
+                    "action": f"{tool_name}({json.dumps(tool_args, ensure_ascii=False)})",
+                    "observation": result[:500],
+                }
+            )
 
             # 工具执行结果塞给LLM
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                }
+            )
 
     # 超出最大循环次数 直接返回
     return {
         "thoughts": thoughts,
         "final_answer": "达到最大迭代次数，任务未完成。请简化你的需求或分步提问。",
         "tool_calls": tool_calls_log,
-        "iterations": iterations
+        "iterations": iterations,
     }
+
 
 async def run_agent_stream(user_message: str) -> AsyncIterator[dict[str, Any]]:
     """
@@ -153,7 +161,9 @@ async def run_agent_stream(user_message: str) -> AsyncIterator[dict[str, Any]]:
         for tool_call in choice.message.tool_calls:
             tool_name = tool_call.function.name
             try:
-                tool_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                tool_args = (
+                    json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                )
             except json.JSONDecodeError:
                 tool_args = {}
 
@@ -187,15 +197,16 @@ async def run_agent_stream(user_message: str) -> AsyncIterator[dict[str, Any]]:
                 },
             }
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                }
+            )
 
     # 超过最大迭代次数
     yield {
         "event": "final",
         "data": {"answer": "达到最大迭代次数，任务未完成。", "iterations": iterations},
     }
-    

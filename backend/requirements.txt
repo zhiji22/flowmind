@@ -5,6 +5,7 @@ asyncpg==0.30.0
 alembic==1.14.0
 celery[redis]==5.4.0
 redis==5.2.1
+croniter==3.0.3
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 httpx==0.28.1
@@ -18,6 +19,7 @@ python-multipart==0.0.20
 bcrypt==3.2.2
 email-validator>=2.1.0
 aiosmtplib==3.0.2
+slowapi==0.1.9
 
 # === 测试依赖 ===
 pytest==8.3.4
