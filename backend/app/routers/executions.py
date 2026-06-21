@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.execution import Execution, ExecutionStatus, StepExecution
+from app.models.execution import ApprovalRequest, Execution, ExecutionStatus, StepExecution
 from app.models.user import User
 from app.models.workflow import Workflow
 from app.routers.auth import get_current_user
@@ -95,8 +95,9 @@ async def retry_execution(
     execution.finished_at = None
     execution.result = None
 
-    # 清理旧的步骤执行记录，避免重复
+    # 清理旧的步骤执行记录与待审批记录，避免重复执行 / 审批恢复时命中残留的 PENDING 审批而死锁
     await db.execute(delete(StepExecution).where(StepExecution.execution_id == execution.id))
+    await db.execute(delete(ApprovalRequest).where(ApprovalRequest.execution_id == execution.id))
     await db.commit()
     await db.refresh(execution)
 

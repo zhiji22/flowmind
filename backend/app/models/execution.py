@@ -90,7 +90,7 @@ class ApprovalRequest(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     execution_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("executions.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("executions.id", ondelete="CASCADE"), nullable=False
     )
     step_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("steps.id"), nullable=False

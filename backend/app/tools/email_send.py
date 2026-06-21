@@ -50,6 +50,13 @@ class EmailSendTool(BaseTool):
         if not _EMAIL_RE.match(to_addr):
             return "发送失败：收件人邮箱地址格式无效"
 
+        # 收件人白名单：防止 prompt 注入借 SMTP 凭据向任意地址发信。
+        # 白名单为空表示不限制（仅建议本地开发）。
+        allowed = settings.email_allowed_recipients_list
+        if allowed and to_addr.lower() not in allowed:
+            logger.warning("邮件收件人不在白名单内，已拦截: %s", to_addr)
+            return f"发送失败：收件人 {to_addr} 不在允许列表内"
+
         msg = MIMEMultipart()
         msg["From"] = settings.SMTP_FROM
         msg["To"] = to_addr
