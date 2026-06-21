@@ -1,4 +1,7 @@
 """RedisLock 的单元测试：用 monkeypatch 替换 get_redis，避免依赖真 Redis。"""
+import asyncio
+import logging
+
 import pytest
 
 from app.services import redis_client
@@ -87,3 +90,117 @@ class TestRedisLockDegraded:
 
         async with RedisLock("any", ttl=5) as lock:
             assert lock.acquired is True  # 降级放行
+
+
+class _LoopBoundFakeRedis:
+    """模拟真实 redis.asyncio：客户端绑定到创建时的 event loop。
+
+    redis.asyncio 的连接池在首次使用时绑定到当前 loop；loop 一关闭，
+    在别的 loop 上复用同一客户端会抛 RuntimeError('Event loop is closed')。
+    本类复刻这一行为，并通过类级 _store 模拟「所有客户端共享同一台
+    Redis 服务器」。
+    """
+
+    _store: dict[str, str] = {}
+
+    def __init__(self) -> None:
+        self._loop = asyncio.get_running_loop()
+
+    def _guard(self) -> None:
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Event loop is closed")
+
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        self._guard()
+        if nx and key in self._store:
+            return None
+        self._store[key] = value
+        return "OK"
+
+    async def eval(self, script: str, numkeys: int, key: str, token: str) -> int:
+        self._guard()
+        if self._store.get(key) == token:
+            self._store.pop(key, None)
+            return 1
+        return 0
+
+    async def aclose(self) -> None:
+        self._guard()
+
+
+class TestRedisLockAcrossEventLoops:
+    """复现 Celery 执行模型：每个任务都在独立的 asyncio.run() loop 里跑。
+
+    全局 Redis 单例一旦绑定到已关闭的 loop，后续每次 acquire 都会抛
+    'Event loop is closed' 并被降级吞掉——锁永远"成功"，互斥保护形同虚设。
+    get_redis 必须能在 loop 切换后自动重建客户端。
+
+    注意：本用例是同步函数，内部用 asyncio.run() 主动起多条独立 loop，
+    与 pytest-asyncio 的 session loop 隔离开。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_from_url(self, monkeypatch):
+        """把 redis.from_url 换成 loop-bound 假客户端，并重置全局单例。"""
+        _LoopBoundFakeRedis._store.clear()
+        monkeypatch.setattr(
+            redis_client.redis,
+            "from_url",
+            lambda *a, **k: _LoopBoundFakeRedis(),
+        )
+        monkeypatch.setattr(redis_client, "_client", None, raising=False)
+        monkeypatch.setattr(redis_client, "_client_loop", None, raising=False)
+        yield
+
+    def test_lock_works_across_consecutive_event_loops(self, caplog) -> None:
+        async def _acquire_and_release():
+            async with RedisLock("scheduler_tick", ttl=30) as lock:
+                assert lock.acquired is True
+            # 正常退出后 key 必须被 CAS 释放
+            assert "lock:scheduler_tick" not in _LoopBoundFakeRedis._store
+
+        with caplog.at_level(logging.WARNING, logger="app.services.redis_client"):
+            # 模拟 beat 连续派发 3 个 tick，各自落在独立 loop
+            for _ in range(3):
+                asyncio.run(_acquire_and_release())
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any(
+            "加锁失败" in m or "释放锁失败" in m for m in messages
+        ), f"跨 loop 使用 Redis 时出现降级警告: {messages}"
+
+
+class TestCloseRedis:
+    """close_redis 的清理行为：正常关闭 + loop 已关闭时不抛。"""
+
+    async def test_close_resets_client_and_loop(self, monkeypatch) -> None:
+        class _FakeClient:
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+
+        fake = _FakeClient()
+        monkeypatch.setattr(redis_client, "_client", fake)
+        monkeypatch.setattr(redis_client, "_client_loop", object())
+
+        await redis_client.close_redis()
+
+        assert fake.closed is True
+        assert redis_client._client is None
+        assert redis_client._client_loop is None
+
+    async def test_close_swallows_loop_closed_error(self, monkeypatch) -> None:
+        """绑定的 loop 已关闭时，aclose 抛错也不应让 close_redis 失败。"""
+
+        class _BrokenClient:
+            async def aclose(self) -> None:
+                raise RuntimeError("Event loop is closed")
+
+        monkeypatch.setattr(redis_client, "_client", _BrokenClient())
+        monkeypatch.setattr(redis_client, "_client_loop", object())
+
+        await redis_client.close_redis()  # 不应抛
+        assert redis_client._client is None
+        assert redis_client._client_loop is None
