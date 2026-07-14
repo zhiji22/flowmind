@@ -27,7 +27,7 @@ export default function EditWorkflowPage() {
 
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.replace("/login");
       return;
     }
 
@@ -59,7 +59,7 @@ export default function EditWorkflowPage() {
 
     loadWorkflow();
     return () => { cancelled = true; };
-  }, [workflowId, router]);
+  }, [workflowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = useCallback(async () => {
     setSaving(true);

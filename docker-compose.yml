@@ -53,12 +53,10 @@ services:
       - flowmind-net
 
   web:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-
-    # 本地开发用 dev server
-    command: npm run dev
+    # 开发模式：直接用 node 镜像挂载源码，不走生产 Dockerfile
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install --ignore-scripts 2>/dev/null; npm run dev"
 
     ports:
       - "3000:3000"
@@ -69,6 +67,7 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+      - /app/.next
     networks:
       - flowmind-net
   

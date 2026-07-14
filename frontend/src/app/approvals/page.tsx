@@ -16,7 +16,7 @@ export default function ApprovalsPage() {
   /** 加载待审批列表 */
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.replace("/login");
       return;
     }
 
@@ -43,7 +43,7 @@ export default function ApprovalsPage() {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 通过审批 */
   async function handleApprove(id: string) {

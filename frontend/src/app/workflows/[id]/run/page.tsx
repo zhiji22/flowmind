@@ -28,10 +28,10 @@ function RunWorkflowContent() {
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
 
-  // 初始加载
+  // 初始加载（仅执行一次）
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.replace("/login");
       return;
     }
 
@@ -70,7 +70,7 @@ function RunWorkflowContent() {
 
     loadData();
     return () => { cancelled = true; };
-  }, [workflowId, executionId, router]);
+  }, [workflowId, executionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 轮询执行状态（仅在 running/pending 时）
   useEffect(() => {
@@ -90,7 +90,7 @@ function RunWorkflowContent() {
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(timer);
-  }, [executionId, executionStatus, router]);
+  }, [executionId, executionStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRetry() {
     if (!executionId) return;

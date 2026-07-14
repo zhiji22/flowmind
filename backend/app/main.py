@@ -1,4 +1,3 @@
-import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -30,7 +29,7 @@ from app.routers import workflows as workflows_router
 from app.services.llm_client import close_client
 from app.services.redis_client import close_redis
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
