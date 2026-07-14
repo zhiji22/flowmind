@@ -1,11 +1,15 @@
 """Celery 任务定义：
 
-  1. execute_workflow_task(workflow_id) —— 执行单个工作流
-  2. tick_scheduler() —— 每 30s 心跳，扫描到期调度并入队执行
+  1. execute_workflow_task(execution_id) —— 运行一条已存在的 Execution
+  2. tick_scheduler() —— 每 30s 心跳，扫描到期调度，建 Execution 并入队执行
 
 关键点：Celery 任务是同步函数，但执行引擎/DB 是 async。
 为避免 asyncpg 连接跨事件循环的坑，每个任务内用 asyncio.run() 起独立循环，
 并用 NullPool + 用后即 dispose 的一次性引擎。
+
+execute_workflow_task 接收 execution_id（而非 workflow_id）：手动触发/重试/
+审批恢复由各 router 先建好 Execution 再入队，调度器同理先建 Execution。
+统一签名后，前端在触发时拿到的 execution_id 立即可用于轮询。
 """
 
 import asyncio
@@ -49,42 +53,24 @@ def _run_async(coro_factory):
 
 
 # ---------------------------------------------------------------------------
-# 任务 1：执行工作流
+# 任务 1：运行一条已存在的 Execution
 # ---------------------------------------------------------------------------
 
 
-async def _execute_workflow_async(session_factory, workflow_id: uuid.UUID) -> str:
-    """创建执行记录并运行工作流，返回 execution_id。
-
-    执行前再次校验工作流存在且非删除态，避免调度派发与用户删除之间的竞态
-    导致 Execution 因外键级联而插入失败/产生孤儿任务。
-    """
+async def _execute_workflow_async(session_factory, execution_id: uuid.UUID) -> str:
+    """运行一条已存在的 Execution（拓扑排序 + 工具调用 + 审批 + 事件推送）。"""
     async with session_factory() as db:
-        wf = await db.get(Workflow, workflow_id)
-        if wf is None:
-            logger.warning("调度触发的工作流已不存在，跳过: %s", workflow_id)
-            return ""
-
-        execution = Execution(
-            workflow_id=workflow_id,
-            status=ExecutionStatus.PENDING,
-        )
-        db.add(execution)
-        await db.commit()
-        await db.refresh(execution)
-        exec_id = execution.id
-        # 复用现有执行引擎（拓扑排序 + 工具调用 + 审批 + 事件推送）
-        await execute_workflow(exec_id, db)
-    return str(exec_id)
+        await execute_workflow(execution_id, db)
+    return str(execution_id)
 
 
 @celery_app.task(name="flowmind.execute_workflow", bind=True)
-def execute_workflow_task(self, workflow_id: str) -> str:
-    """执行单个工作流（被调度器或手动触发）。"""
+def execute_workflow_task(self, execution_id: str) -> str:
+    """运行一条已存在的 Execution（手动触发 / 重试 / 审批恢复 / 调度均走此入口）。"""
     try:
-        return _run_async(lambda sf: _execute_workflow_async(sf, uuid.UUID(workflow_id)))
+        return _run_async(lambda sf: _execute_workflow_async(sf, uuid.UUID(execution_id)))
     except Exception:
-        logger.exception("Celery 执行工作流失败: %s", workflow_id)
+        logger.exception("Celery 执行工作流失败: %s", execution_id)
         raise
 
 
@@ -94,7 +80,7 @@ def execute_workflow_task(self, workflow_id: str) -> str:
 
 
 async def _tick_scheduler_async(session_factory) -> int:
-    """扫描所有启用的、到期的调度，入队执行并更新下次运行时间。
+    """扫描所有启用的、到期的调度，建 Execution 并入队执行、更新下次运行时间。
 
     必须在 RedisLock 保护下运行：beat 每 30s 派发一次，worker 并发=2，
     若某次 tick 超过 30s，下一次 tick 会落到另一个并发槽同时跑，
@@ -117,19 +103,34 @@ async def _tick_scheduler_async(session_factory) -> int:
             if wf is None or wf.status != WorkflowStatus.ACTIVE:
                 continue
 
-            # 入队执行（异步分发到 worker）
-            execute_workflow_task.delay(str(sched.workflow_id))
-            triggered += 1
-            logger.info("调度触发: workflow=%s, cron=%s", sched.workflow_id, sched.cron_expr)
+            # 先建 Execution 行并提交，再把 execution_id 入队（与手动触发一致）。
+            # 必须在 delay 之前 commit：Celery worker 在独立连接里查询，
+            # READ COMMITTED 下未提交的行不可见，否则引擎会因查不到 Execution
+            # 而静默 return，导致调度触发的工作流被无声丢弃。
+            execution = Execution(
+                workflow_id=sched.workflow_id,
+                status=ExecutionStatus.PENDING,
+            )
+            db.add(execution)
+            await db.flush()  # 拿到 execution.id
 
-            # 计算并写入下次运行时间
+            # 计算并写入下次运行时间（与 Execution 同事务提交，避免重复触发）
             try:
                 sched.next_run = croniter(sched.cron_expr, now).get_next(datetime)
             except Exception:
                 logger.warning("无效的 cron 表达式，已禁用: %s", sched.cron_expr)
                 sched.enabled = False
 
-        await db.commit()
+            await db.commit()  # 提交后 worker 才能看到这行 Execution
+
+            execute_workflow_task.delay(str(execution.id))
+            triggered += 1
+            logger.info(
+                "调度触发: workflow=%s, execution=%s, cron=%s",
+                sched.workflow_id,
+                execution.id,
+                sched.cron_expr,
+            )
 
     return triggered
 

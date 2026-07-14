@@ -28,6 +28,17 @@ _TIMEOUT = 15.0
 _MAX_RESPONSE_CHARS = 100_000
 # 最多跟随的重定向次数
 _MAX_REDIRECTS = 5
+# DNS 解析超时（秒），防止恶意慢 DNS 占住 worker 线程
+_DNS_TIMEOUT = 5.0
+# 云厂商元数据服务主机名黑名单（IP 由 _is_unsafe_ip 的 link_local 命中，这里补域名形式）
+_BLOCKED_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+    }
+)
 
 
 def _is_unsafe_ip(ip: str) -> bool:
@@ -43,6 +54,7 @@ def _is_unsafe_ip(ip: str) -> bool:
         or addr.is_link_local
         or addr.is_reserved
         or addr.is_multicast
+        or addr.is_unspecified  # 0.0.0.0 / :: —— 部分栈会路由到本机
     )
 
 
@@ -75,14 +87,19 @@ async def _assert_safe_url(url: str) -> None:
             raise ValueError(f"禁止访问内网地址: {hostname}")
         return
 
-    # 域名：先拒绝明显的本地名
-    if hostname.lower() in ("localhost",):
-        raise ValueError("禁止访问 localhost")
+    # 域名：先拒绝明显的本地名 / 云元数据主机名
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"禁止访问的主机名: {hostname}")
 
-    # 域名解析为 IP，逐个检查，防止 DNS 解析到内网
+    # 域名解析为 IP，逐个检查，防止 DNS 解析到内网（解析加超时，防慢 DNS 占线程）
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.run_in_executor(None, lambda: socket.getaddrinfo(hostname, None))
+        infos = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: socket.getaddrinfo(hostname, None)),
+            timeout=_DNS_TIMEOUT,
+        )
+    except TimeoutError as e:
+        raise ValueError(f"解析域名 {hostname} 超时") from e
     except socket.gaierror as e:
         raise ValueError(f"无法解析域名 {hostname}: {e}") from e
 

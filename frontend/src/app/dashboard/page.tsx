@@ -13,10 +13,10 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [operatingId, setOperatingId] = useState<string | null>(null);
 
-  // 页面加载时：检查登录状态 + 获取数据
+  // 页面加载时：检查登录状态 + 获取数据（仅执行一次）
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.replace("/login");
       return;
     }
 
@@ -43,7 +43,7 @@ export default function DashboardPage() {
     load();
 
     return () => { cancelled = true; };
-  }, [router]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 删除工作流 */
   async function handleDelete(id: string) {

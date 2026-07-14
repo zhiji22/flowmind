@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = ""
     SMTP_USE_TLS: bool = True
+    # 邮件收件人白名单（逗号分隔）。为空表示不限制（仅建议本地开发用）；
+    # 生产应填具体地址，防止 prompt 注入借 SMTP 凭据向任意地址发信。
+    EMAIL_ALLOWED_RECIPIENTS: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -82,6 +85,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """把 CORS_ALLOW_ORIGINS 拆成 list；空字符串过滤"""
         return [o.strip() for o in self.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def email_allowed_recipients_list(self) -> list[str]:
+        """收件人白名单（小写）；空表示不限制。"""
+        return [e.strip().lower() for e in self.EMAIL_ALLOWED_RECIPIENTS.split(",") if e.strip()]
 
 
 settings = Settings()

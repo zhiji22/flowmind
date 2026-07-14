@@ -29,12 +29,12 @@ export default function ChatPage() {
   // 消息列表底部引用，用于自动滚动
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 页面加载时检查登录状态
+  // 页面加载时检查登录状态（仅执行一次）
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login");
+      router.replace("/login");
     }
-  }, [router]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 消息更新时自动滚到底部
   useEffect(() => {
